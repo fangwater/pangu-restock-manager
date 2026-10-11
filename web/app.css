@@ -2635,7 +2635,7 @@ td.sku-cell > .row-sub {
   padding: 10px;
   border-radius: 7px;
 }
-@media (max-width: 1200px) {
+@media (max-width: 1400px) {
   .date-filter {
     max-width: none;
     flex-basis: 100%;
@@ -2647,6 +2647,8 @@ td.sku-cell > .row-sub {
   .filter-actions {
     margin-left: 0;
   }
+}
+@media (max-width: 1200px) {
   .classification-layout {
     grid-template-columns: 190px minmax(0, 1fr);
   }

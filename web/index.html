@@ -3,19 +3,19 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <meta name="theme-color" content="#6b5ce7" />
+    <meta name="theme-color" content="#315dcc" />
     <title>Pangu · 备货管理</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-    <link rel="stylesheet" href="app.css?v=6" />
+    <link rel="stylesheet" href="app.css?v=7" />
     <script defer src="vendor/lucide.min.js"></script>
-    <script defer src="vendor/chart.umd.min.js"></script>
-    <script defer src="app.js?v=6"></script>
+    <script defer src="vendor/echarts.min.js"></script>
+    <script defer src="app.js?v=7"></script>
   </head>
   <body>
     <aside class="sidebar" id="sidebar">
       <a class="brand" href="./"
         ><span class="brand-mark"><i data-lucide="boxes"></i></span
-        ><span>Pangu<span class="brand-sub">备货管理 · RESTOCK</span></span></a
+        ><span>Pangu<span class="brand-sub">备货管理</span></span></a
       >
       <div class="nav-label">工作空间</div>
       <nav aria-label="主导航">
@@ -46,8 +46,7 @@
       </nav>
       <div class="sidebar-bottom">
         <span class="server-dot"></span>
-        <div><strong>Hong Kong</strong><span>本地维护 · 自动同步</span></div>
-        <span class="hk">HK</span>
+        <div><strong>Pangu ERP</strong><span>备货管理</span></div>
       </div>
     </aside>
     <div class="main-shell">
@@ -71,7 +70,7 @@
       <main>
         <section class="page-heading">
           <div>
-            <h1 id="pageTitle">备货总览<span class="title-dot">.</span></h1>
+            <h1 id="pageTitle">备货总览</h1>
           </div>
           <div class="page-actions">
             <button class="button" id="settingsButton">
@@ -106,21 +105,32 @@
               </div>
             </div>
             <div class="compact-filter">
-              <span>店铺</span>
+              <label id="shopLabel">店铺</label>
               <details id="shopSelect" class="check-dropdown">
-                <summary id="shopSummary">全部店铺</summary>
+                <summary
+                  id="shopSummary"
+                  aria-labelledby="shopLabel shopSummary"
+                >
+                  全部店铺
+                </summary>
                 <div class="dropdown-options" id="shopOptions"></div>
               </details>
             </div>
-            <label class="compact-filter"
-              >类目<select id="categorySelect">
-                <option value="all">全部类目</option>
-              </select></label
-            >
             <div class="compact-filter">
-              <span>订单状态</span>
+              <label for="categorySelect">类目</label
+              ><select id="categorySelect">
+                <option value="all">全部类目</option>
+              </select>
+            </div>
+            <div class="compact-filter">
+              <label id="statusLabel">订单状态</label>
               <details id="statusSelect" class="check-dropdown">
-                <summary id="statusSummary">全部有效状态</summary>
+                <summary
+                  id="statusSummary"
+                  aria-labelledby="statusLabel statusSummary"
+                >
+                  全部有效状态
+                </summary>
                 <div class="dropdown-options">
                   <label
                     ><input
@@ -155,11 +165,6 @@
             ><span id="filterPending"></span>
           </div>
         </section>
-        <section
-          class="category-grid"
-          id="categoryGrid"
-          aria-label="类目总览"
-        ></section>
         <section class="stats-grid" id="statsGrid" aria-label="备货统计">
           <article class="stat-card">
             <div class="stat-top">
@@ -169,7 +174,7 @@
               ></span>
             </div>
             <div class="stat-value" id="totalSales">—</div>
-            <div class="stat-foot" id="salesFoot">按订单 quantity 统计件数</div>
+            <div class="stat-foot" id="salesFoot">订单件数</div>
             <div class="stat-decoration bars">
               <b></b><b></b><b></b><b></b><b></b><b></b><b></b>
             </div>
@@ -204,49 +209,53 @@
           </article>
         </section>
         <section class="charts-grid" id="chartsGrid">
+          <article class="panel distribution-panel">
+            <section
+              class="distribution-section"
+              id="categoryGrid"
+              aria-label="类目销量占比"
+            >
+              <div class="panel-heading">
+                <h2>类目销量占比</h2>
+                <span class="panel-meta">全类目 · 订单件数</span>
+              </div>
+              <div class="distribution-body">
+                <div
+                  class="donut-chart"
+                  id="categoryChart"
+                  role="img"
+                  aria-label="类目销量占比饼图"
+                ></div>
+                <div class="distribution-legend" id="categoryLegend"></div>
+              </div>
+            </section>
+            <section class="distribution-section" aria-label="店铺销量占比">
+              <div class="panel-heading">
+                <h2>店铺销量占比</h2>
+                <span class="panel-meta">当前筛选 · 订单件数</span>
+              </div>
+              <div class="distribution-body">
+                <div
+                  class="donut-chart"
+                  id="shareChart"
+                  role="img"
+                  aria-label="店铺销量占比饼图"
+                ></div>
+                <div class="distribution-legend" id="splitLegend"></div>
+              </div>
+            </section>
+          </article>
           <article class="panel trend-panel">
             <div class="panel-heading">
-              <div>
-                <h2>销量趋势 <span class="subtle-tag">按日</span></h2>
-              </div>
-              <div class="chart-legend">
-                <span><b class="home-color"></b>HOME</span
-                ><span><b class="buy-color"></b>BUY</span
-                ><span><b class="shein-color"></b>希音</span>
-              </div>
+              <h2>销量趋势</h2>
+              <div class="chart-legend" id="trendLegend"></div>
             </div>
-            <div class="trend-chart">
-              <canvas
-                id="salesChart"
-                aria-label="三店每日销量折线图"
-                role="img"
-              ></canvas>
-            </div>
-          </article>
-          <article class="panel split-panel">
-            <div class="panel-heading">
-              <div>
-                <h2>店铺销量占比</h2>
-                <p>订单总销量构成</p>
-              </div>
-              <i data-lucide="chart-pie"></i>
-            </div>
-            <div class="split-body">
-              <div class="donut-wrap">
-                <canvas
-                  id="shareChart"
-                  aria-label="店铺销量占比"
-                  role="img"
-                ></canvas>
-                <div class="donut-center">
-                  <strong>3</strong><span>个店铺</span>
-                </div>
-              </div>
-              <div class="split-legend" id="splitLegend"></div>
-            </div>
-            <div class="split-footer">
-              <i data-lucide="git-merge"></i>同一仓库 SKU，跨店统一汇总
-            </div>
+            <div
+              class="trend-chart"
+              id="salesChart"
+              role="img"
+              aria-label="每日销量趋势"
+            ></div>
           </article>
         </section>
         <section class="panel sku-panel" id="skuPanel">

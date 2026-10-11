@@ -1,5 +1,49 @@
 [
-  {"code":"hanger","name":"衣架","icon":"hanger","sort_order":10,"match_rules":{"sku_prefixes":[],"keywords":["hanger","衣架","perchas","percha ","ph+h","ph-h"]}},
-  {"code":"hamper","name":"脏衣篓","icon":"hamper","sort_order":20,"match_rules":{"sku_prefixes":["LB-"],"keywords":["hamper","laundry basket","脏衣","洗衣篓","cestas de ropa","cestos de ropa"]}},
-  {"code":"uncategorized","name":"待分类","icon":"package","sort_order":999,"match_rules":{"sku_prefixes":[],"keywords":[]}}
+  {
+    "code": "hanger",
+    "name": "衣架",
+    "icon": "hanger",
+    "sort_order": 10,
+    "match_rules": {
+      "sku_prefixes": [],
+      "keywords": ["hanger", "衣架", "perchas", "percha ", "ph+h", "ph-h"]
+    }
+  },
+  {
+    "code": "hamper",
+    "name": "脏衣篓",
+    "icon": "hamper",
+    "sort_order": 20,
+    "match_rules": {
+      "sku_prefixes": ["LB-"],
+      "keywords": [
+        "hamper",
+        "laundry basket",
+        "脏衣",
+        "洗衣篓",
+        "cestas de ropa",
+        "cestos de ropa"
+      ]
+    }
+  },
+  {
+    "code": "bakeware",
+    "name": "烤盘",
+    "icon": "tray",
+    "sort_order": 30,
+    "match_rules": {
+      "sku_prefixes": ["SP+D-"],
+      "keywords": ["烤盘", "baking pan", "bandejas para asar"]
+    }
+  },
+  {
+    "code": "uncategorized",
+    "name": "待分类",
+    "icon": "package",
+    "sort_order": 999,
+    "match_rules": {
+      "sku_prefixes": [],
+      "keywords": []
+    }
+  }
 ]

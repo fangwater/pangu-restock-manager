@@ -414,7 +414,7 @@ class Manager:
         if not isinstance(code, str) or not re.fullmatch(r'[a-z][a-z0-9_-]{0,39}', code) or not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
             raise APIError('类目编码须为英文/数字，名称为 1–60 字')
         icon = payload.get('icon', 'package')
-        if icon not in ('hanger', 'hamper', 'package', 'box', 'layers'):
+        if icon not in ('hanger', 'hamper', 'tray', 'package', 'box', 'layers'):
             raise APIError('类目图标无效')
         rules = payload.get('match_rules', {})
         if not isinstance(rules, dict):
@@ -586,7 +586,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith('/api/'):
                 raise APIError('接口不存在', 404)
             else:
-                files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/chart.umd.min.js': ('vendor/chart.umd.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
+                files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/echarts.min.js': ('vendor/echarts.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
                 if path not in files:
                     raise APIError('页面不存在', 404)
                 filename, mime = files[path]

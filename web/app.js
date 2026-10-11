@@ -14,13 +14,15 @@ const num = (v) =>
     : Number(v).toLocaleString("zh-CN", { maximumFractionDigits: 2 });
 const pct = (v) => `${Number(v || 0).toFixed(2)}%`;
 const colors = [
-  "#8778e3",
-  "#e8b76a",
-  "#dc8fa5",
-  "#7cbdac",
-  "#8da7d1",
-  "#b695cd",
+  "#3b65d9",
+  "#17988b",
+  "#e49a35",
+  "#805ad5",
+  "#db6d79",
+  "#558399",
 ];
+const categoryColor = (c, i) =>
+  c.code === "uncategorized" ? "#94a3b8" : colors[i % colors.length];
 const statuses = {
   draft: "草稿",
   confirmed: "已确认",
@@ -170,8 +172,7 @@ function render() {
     rules: "备货规则",
     sources: "数据连接",
   };
-  $("pageTitle").innerHTML =
-    esc(titles[state.view]) + '<span class="title-dot">.</span>';
+  $("pageTitle").textContent = titles[state.view];
   $("breadcrumbTitle").textContent = titles[state.view];
   document
     .querySelectorAll("[data-view]")
@@ -200,25 +201,6 @@ function render() {
   $("planNavCount").textContent = d.rows.filter(
     (r) => r.plan && r.plan.status !== "completed",
   ).length;
-  $("categoryGrid").innerHTML = d.categories
-    .map(
-      (c) =>
-        `<button class="category-card ${d.filters.category === c.code ? "active" : ""}" data-category="${esc(c.code)}"><span class="category-top"><span class="category-name"><span class="category-icon">${categoryIcon(c.icon)}</span>${esc(c.name)}</span><span>${pct(c.share)}</span></span><strong>${num(c.total)} <small>件</small></strong><div class="track"><b style="width:${c.share}%"></b></div><small>${c.sku_count} 个有销量 SKU</small></button>`,
-    )
-    .join("");
-  $("categoryGrid")
-    .querySelectorAll("button")
-    .forEach(
-      (b) =>
-        (b.onclick = () =>
-          load({
-            ...state.query,
-            category:
-              state.data.filters.category === b.dataset.category
-                ? "all"
-                : b.dataset.category,
-          })),
-    );
   $("connection").className =
     `connection ${d.sources.some((s) => s.status === "error") ? "error" : "ok"}`;
   $("connection").innerHTML =
@@ -237,6 +219,7 @@ function render() {
   } else if (state.view === "rules") renderRules();
   else if (state.view === "sources") renderSources();
   else renderTable();
+  disposeCharts();
   if (state.view === "overview") renderCharts();
   icons();
 }
@@ -357,88 +340,206 @@ function updateSelection() {
     ? `采用建议 (${state.selected.size})`
     : "采用建议";
 }
-function renderCharts() {
-  state.charts.forEach((c) => c.destroy());
+function disposeCharts() {
+  state.charts.forEach((chart) => chart.dispose());
   state.charts = [];
-  if (!window.Chart) return;
-  const d = state.data,
-    shops = d.filters.shops;
-  const labels = shops.map((k) => d.shops.find((s) => s.key === k).name);
-  $("chartsGrid").querySelector(".chart-legend").innerHTML = labels
-    .map(
-      (n, i) =>
-        `<span><b style="background:${colors[i % colors.length]}"></b>${esc(n)}</span>`,
-    )
-    .join("");
-  const opts = {
-    responsive: true,
-    maintainAspectRatio: false,
-    plugins: { legend: { display: false } },
+}
+function makeChart(id, option) {
+  const chart = echarts.init($(id), null, { renderer: "svg" });
+  chart.setOption({
     animation: false,
-  };
-  state.charts.push(
-    new Chart($("salesChart"), {
-      type: "line",
-      data: {
-        labels: d.series.map((p) => p.date.slice(5)),
-        datasets: shops.map((k, i) => ({
-          label: labels[i],
-          data: d.series.map((p) => p[k]),
-          borderColor: colors[i % colors.length],
-          backgroundColor: colors[i % colors.length],
-          tension: 0.3,
-          pointRadius: 0,
-          borderWidth: 2,
-        })),
-      },
-      options: {
-        ...opts,
-        scales: {
-          x: {
-            grid: { display: false },
-            ticks: { maxTicksLimit: 8, font: { size: 9 }, color: "#aaa4b6" },
-          },
-          y: {
-            beginAtZero: true,
-            ticks: { font: { size: 9 }, color: "#aaa4b6" },
-            grid: { color: "#f1eef6" },
-          },
-        },
-      },
-    }),
-  );
-  state.charts.push(
-    new Chart($("shareChart"), {
-      type: "doughnut",
-      data: {
-        labels,
-        datasets: [
+    textStyle: { fontFamily: "inherit", color: "#475569" },
+    ...option,
+  });
+  state.charts.push(chart);
+  return chart;
+}
+function drawDonut(id, entries, total, caption, onClick) {
+  const chart = makeChart(id, {
+    aria: { enabled: true },
+    tooltip: {
+      trigger: "item",
+      confine: true,
+      formatter: (p) =>
+        `${esc(p.name)}<br>${num(p.value)} 件 · ${pct(p.data.share)}`,
+    },
+    graphic: [
+      {
+        type: "group",
+        left: "center",
+        top: "middle",
+        silent: true,
+        children: [
           {
-            data: shops.map((k) => d.summary.shops[k]),
-            backgroundColor: shops.map((k, i) => colors[i % colors.length]),
-            borderWidth: 3,
-            borderColor: "#fff",
+            type: "text",
+            style: {
+              text: num(total),
+              fill: "#1e293b",
+              font: "600 24px sans-serif",
+              textAlign: "center",
+              y: -10,
+            },
+          },
+          {
+            type: "text",
+            style: {
+              text: total ? caption : "暂无销量",
+              fill: "#64748b",
+              font: "12px sans-serif",
+              textAlign: "center",
+              y: 19,
+            },
           },
         ],
       },
-      options: { ...opts, cutout: "78%" },
-    }),
+    ],
+    series: [
+      {
+        type: "pie",
+        radius: ["65%", "85%"],
+        center: ["50%", "50%"],
+        minAngle: 0,
+        stillShowZeroSum: false,
+        showEmptyCircle: true,
+        emptyCircleStyle: { color: "#e9edf3" },
+        selectedMode: "single",
+        selectedOffset: 3,
+        label: { show: false },
+        labelLine: { show: false },
+        emphasis: { scaleSize: 4 },
+        data: entries.map((e) => ({
+          name: e.name,
+          value: e.total,
+          code: e.code,
+          share: e.share,
+          selected: e.selected,
+          itemStyle: { color: e.color },
+        })),
+      },
+    ],
+  });
+  chart.on("click", (event) => {
+    if (event.componentType === "series") onClick(event.data.code);
+  });
+}
+function renderCharts() {
+  if (!window.echarts) return;
+  const d = state.data,
+    shops = d.filters.shops;
+  const categories = d.categories
+    .map((c, i) => ({
+      ...c,
+      color: categoryColor(c, i),
+      selected: d.filters.category === c.code,
+    }))
+    .filter((c) => c.total || c.assigned_skus || c.selected);
+  const categoryQuery = (code) =>
+    load({
+      ...state.query,
+      category: d.filters.category === code ? "all" : code,
+    });
+  $("categoryLegend").innerHTML =
+    `<div class="legend-head"><span>类目</span><span>销量</span><span>占比</span></div>` +
+    categories
+      .map(
+        (c) =>
+          `<button class="legend-row ${c.selected ? "active" : ""}" data-category="${esc(c.code)}" aria-pressed="${c.selected}"><span class="legend-name"><b style="background:${c.color}"></b><span>${esc(c.name)}<small>${c.sku_count} 个有销量 SKU</small></span></span><strong>${num(c.total)}</strong><span>${pct(c.share)}</span></button>`,
+      )
+      .join("");
+  $("categoryLegend")
+    .querySelectorAll("[data-category]")
+    .forEach((b) => (b.onclick = () => categoryQuery(b.dataset.category)));
+  drawDonut(
+    "categoryChart",
+    categories,
+    d.categories.reduce((sum, c) => sum + c.total, 0),
+    "总销量 / 件",
+    categoryQuery,
   );
-  document.querySelector(".donut-center strong").textContent = shops.length;
-  $("splitLegend").innerHTML = shops
+  const shopEntries = shops.map((key) => ({
+    code: key,
+    name: d.shops.find((s) => s.key === key).name,
+    total: d.summary.shops[key],
+    share: d.summary.shares[key],
+    color: colors[d.shops.findIndex((s) => s.key === key) % colors.length],
+    selected: shops.length === 1,
+  }));
+  const shopQuery = (code) =>
+    load({
+      ...state.query,
+      shops: shops.length === 1 && shops[0] === code ? "all" : code,
+    });
+  $("splitLegend").innerHTML =
+    `<div class="legend-head"><span>店铺</span><span>销量</span><span>占比</span></div>` +
+    shopEntries
+      .map(
+        (s) =>
+          `<button class="legend-row ${s.selected ? "active" : ""}" data-chart-shop="${esc(s.code)}" aria-pressed="${s.selected}"><span class="legend-name"><b style="background:${s.color}"></b>${esc(s.name)}</span><strong>${num(s.total)}</strong><span>${pct(s.share)}</span></button>`,
+      )
+      .join("");
+  $("splitLegend")
+    .querySelectorAll("[data-chart-shop]")
+    .forEach((b) => (b.onclick = () => shopQuery(b.dataset.chartShop)));
+  drawDonut(
+    "shareChart",
+    shopEntries,
+    d.summary.total,
+    "总销量 / 件",
+    shopQuery,
+  );
+  $("trendLegend").innerHTML = shopEntries
     .map(
-      (k, i) =>
-        `<div class="split-row"><div class="split-row-top"><span><b style="background:${colors[i % colors.length]}"></b>${esc(labels[i])}</span><strong>${pct(d.summary.shares[k])}</strong></div><small>${num(d.summary.shops[k])} 件</small></div>`,
+      (s) => `<span><b style="background:${s.color}"></b>${esc(s.name)}</span>`,
     )
     .join("");
+  makeChart("salesChart", {
+    color: shopEntries.map((s) => s.color),
+    tooltip: {
+      trigger: "axis",
+      confine: true,
+      valueFormatter: (v) => `${num(v)} 件`,
+    },
+    grid: { left: 46, right: 24, top: 20, bottom: 28 },
+    xAxis: {
+      type: "category",
+      boundaryGap: false,
+      data: d.series.map((p) => p.date.slice(5)),
+      axisLine: { lineStyle: { color: "#dce3ec" } },
+      axisTick: { show: false },
+      axisLabel: { color: "#64748b", fontSize: 11, hideOverlap: true },
+    },
+    yAxis: {
+      type: "value",
+      minInterval: 1,
+      splitLine: { lineStyle: { color: "#edf1f5", type: "dashed" } },
+      axisLabel: { color: "#64748b", fontSize: 11 },
+    },
+    series: shopEntries.map((s) => ({
+      name: s.name,
+      type: "line",
+      showSymbol: false,
+      smooth: false,
+      lineStyle: { width: 2 },
+      emphasis: { focus: "series" },
+      data: d.series.map((p) => p[s.code]),
+    })),
+  });
 }
+const chartResizeObserver = new ResizeObserver(() => {
+  state.charts.forEach((chart) => {
+    if (!chart.isDisposed()) chart.resize();
+  });
+});
+["categoryChart", "shareChart", "salesChart"].forEach((id) =>
+  chartResizeObserver.observe($(id)),
+);
 function closeDrawer() {
   $("drawer").hidden = true;
   $("drawerBackdrop").hidden = true;
   state.drawerSku = null;
 }
 function drawerHeader(title, copy) {
-  return `<div class="drawer-head"><div><span class="eyebrow">PURCHASE DECISION</span><h2 id="drawerTitle">${esc(title)}</h2><p>${esc(copy)}</p></div><button class="icon-button" type="button" id="closeDrawer" aria-label="关闭"><i data-lucide="x"></i></button></div>`;
+  return `<div class="drawer-head"><div><h2 id="drawerTitle">${esc(title)}</h2><p>${esc(copy)}</p></div><button class="icon-button" type="button" id="closeDrawer" aria-label="关闭"><i data-lucide="x"></i></button></div>`;
 }
 function showDrawer(html) {
   $("drawer").innerHTML = html;
@@ -711,7 +812,7 @@ function renderSources() {
     shein: "Shein",
   };
   $("sourcesPage").innerHTML =
-    `<div class="sources-grid">${state.data.sources.map((s) => `<article class="panel source-card"><div class="source-head"><span class="source-icon"><i data-lucide="${s.source === "inventory" ? "warehouse" : "database"}"></i></span><div><h3>${esc(names[s.source] || s.source)}</h3><p>${s.status === "ok" ? "连接正常" : "拉取失败 · 保留最后成功快照"}</p></div></div><div class="source-datum"><span>最近成功</span><strong>${esc(formatTime(s.success_at))}</strong></div><div class="source-datum"><span>最近检查</span><strong>${esc(formatTime(s.checked_at))}</strong></div>${s.details.rows != null ? `<div class="source-datum"><span>聚合记录</span><strong>${num(s.details.rows)}</strong></div>` : ""}${s.details.skus != null ? `<div class="source-datum"><span>库存 SKU</span><strong>${num(s.details.skus)}</strong></div>` : ""}${s.error ? `<p class="source-error">${esc(s.error)}</p>` : ""}</article>`).join("")}</div><article class="panel source-explanation"><h2>数据与口径</h2><p>销量以订单 quantity 求和，取消与退款订单剔除；库存与采购建议以仓库 SKU 单位计算。</p><p>部分历史 Temu 订单无平台下单时间，沿用中台首次采集日期，日期归属需结合此限制解读。</p><p>同步失败保留成功快照；超过 30 分钟、所选日期不完整或 SKU 缺少库存映射时暂停相应建议。</p></article>`;
+    `<section class="panel sku-panel"><div class="sku-panel-heading"><h2>数据源</h2><span class="panel-meta">${state.data.sources.length} 个连接</span></div><div class="table-scroll"><table><thead><tr><th>数据源</th><th>状态</th><th>最近成功</th><th>最近检查</th><th>数据量</th></tr></thead><tbody>${state.data.sources.map((s) => `<tr><td><strong>${esc(names[s.source] || s.source)}</strong></td><td><span class="badge ${s.status === "ok" ? "ok" : "warn"}">${s.status === "ok" ? "连接正常" : "拉取失败"}</span>${s.error ? `<div class="row-sub">${esc(s.error)}</div>` : ""}</td><td>${esc(formatTime(s.success_at))}</td><td>${esc(formatTime(s.checked_at))}</td><td>${s.details.rows != null ? `${num(s.details.rows)} 条聚合` : s.details.skus != null ? `${num(s.details.skus)} 个 SKU` : "—"}</td></tr>`).join("")}</tbody></table></div></section><article class="panel source-explanation"><h2>数据与口径</h2><p>销量以订单商品件数求和，取消与退款订单剔除；库存与采购建议以仓库 SKU 单位计算。</p><p>部分历史 Temu 订单无平台下单时间，沿用中台首次采集日期。</p><p>同步失败保留成功快照；超过 30 分钟、所选日期不完整或 SKU 缺少库存映射时暂停相应建议。</p></article>`;
 }
 async function downloadExcel(kind) {
   const button = kind === "purchase" ? $("purchaseExport") : $("exportButton");
@@ -745,6 +846,7 @@ function categoryIcon(icon = "package") {
       '<path d="M10 6a2 2 0 1 1 3.5 1.3L12 9v2"/><path d="m12 11-9 6a1 1 0 0 0 .6 2h16.8a1 1 0 0 0 .6-2Z"/>',
     hamper:
       '<path d="M4 7h16l-1.5 14h-13Z"/><path d="M8 7V5a4 4 0 0 1 8 0v2M8 11v6m4-6v6m4-6v6"/>',
+    tray: '<rect x="3" y="6" width="18" height="13" rx="2"/><rect x="6" y="9" width="12" height="7" rx="1"/><path d="M1 10v5m22-5v5"/>',
     box: '<path d="m12 3 9 5-9 5-9-5Z"/><path d="M3 8v9l9 5 9-5V8M12 13v9M7.5 5.5l9 5"/>',
     layers:
       '<path d="m12 3 10 6-10 6L2 9Z"/><path d="m2 13 10 6 10-6M2 17l10 6 10-6"/>',
@@ -777,7 +879,7 @@ function classCategoryForm(category) {
   dialog(
     category ? "编辑类目" : "新增类目",
     "",
-    `<input type="hidden" name="code" value="${esc(c.code)}"><label class="field">类目名称<input name="name" value="${esc(c.name)}" maxlength="60" required></label><label class="field">图标<input name="icon" type="hidden" value="${esc(c.icon)}"></label><div class="icon-choices">${["hanger", "hamper", "package", "box", "layers"].map((icon) => `<button type="button" class="icon-choice ${c.icon === icon ? "active" : ""}" data-category-icon="${icon}" aria-label="${{ hanger: "衣架图标", hamper: "收纳筐图标", package: "商品图标", box: "包装图标", layers: "层级图标" }[icon]}" aria-pressed="${c.icon === icon}">${categoryIcon(icon)}</button>`).join("")}</div><label class="field">排序<input name="sort_order" type="number" min="0" max="10000" step="1" value="${c.sort_order}" required></label>${c.code === "uncategorized" ? "" : `<div class="form-grid"><label class="field">SKU 前缀（每行一项）<textarea name="sku_prefixes" rows="4">${esc((c.match_rules.sku_prefixes || []).join("\n"))}</textarea></label><label class="field">商品关键词（每行一项）<textarea name="keywords" rows="4">${esc((c.match_rules.keywords || []).join("\n"))}</textarea></label></div><div class="rule-impact">规则变更会更新未确认的自动分类，人工确认的 SKU 保持原分类。</div>`}`,
+    `<input type="hidden" name="code" value="${esc(c.code)}"><label class="field">类目名称<input name="name" value="${esc(c.name)}" maxlength="60" required></label><label class="field">图标<input name="icon" type="hidden" value="${esc(c.icon)}"></label><div class="icon-choices">${["hanger", "hamper", "tray", "package", "box", "layers"].map((icon) => `<button type="button" class="icon-choice ${c.icon === icon ? "active" : ""}" data-category-icon="${icon}" aria-label="${{ hanger: "衣架图标", hamper: "收纳筐图标", tray: "烤盘图标", package: "商品图标", box: "包装图标", layers: "层级图标" }[icon]}" aria-pressed="${c.icon === icon}">${categoryIcon(icon)}</button>`).join("")}</div><label class="field">排序<input name="sort_order" type="number" min="0" max="10000" step="1" value="${c.sort_order}" required></label>${c.code === "uncategorized" ? "" : `<div class="form-grid"><label class="field">SKU 前缀（每行一项）<textarea name="sku_prefixes" rows="4">${esc((c.match_rules.sku_prefixes || []).join("\n"))}</textarea></label><label class="field">商品关键词（每行一项）<textarea name="keywords" rows="4">${esc((c.match_rules.keywords || []).join("\n"))}</textarea></label></div><div class="rule-impact">规则变更会更新未确认的自动分类，人工确认的 SKU 保持原分类。</div>`}`,
     (f) =>
       api("categories", "PUT", {
         code: c.code,

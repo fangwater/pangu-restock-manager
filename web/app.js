@@ -354,6 +354,28 @@ function makeChart(id, option) {
   state.charts.push(chart);
   return chart;
 }
+const chartCenters = new WeakMap();
+function fitChartCenter(chart) {
+  const center = chartCenters.get(chart);
+  if (!center) return;
+  const available = Math.min(chart.getWidth(), chart.getHeight()) * 0.65 - 16;
+  const size = Math.max(
+    10,
+    Math.min(24, Math.floor(available / (num(center.total).length * 0.62))),
+  );
+  if (size === center.size) return;
+  center.size = size;
+  chart.setOption({
+    graphic: [
+      {
+        id: "pieCenter",
+        children: [
+          { id: "pieTotal", style: { font: `600 ${size}px sans-serif` } },
+        ],
+      },
+    ],
+  });
+}
 function drawDonut(id, entries, total, caption, onClick) {
   const chart = makeChart(id, {
     aria: { enabled: true },
@@ -365,12 +387,14 @@ function drawDonut(id, entries, total, caption, onClick) {
     },
     graphic: [
       {
+        id: "pieCenter",
         type: "group",
         left: "center",
         top: "middle",
         silent: true,
         children: [
           {
+            id: "pieTotal",
             type: "text",
             style: {
               text: num(total),
@@ -418,6 +442,8 @@ function drawDonut(id, entries, total, caption, onClick) {
       },
     ],
   });
+  chartCenters.set(chart, { total });
+  fitChartCenter(chart);
   chart.on("click", (event) => {
     if (event.componentType === "series") onClick(event.data.code);
   });
@@ -527,7 +553,10 @@ function renderCharts() {
 }
 const chartResizeObserver = new ResizeObserver(() => {
   state.charts.forEach((chart) => {
-    if (!chart.isDisposed()) chart.resize();
+    if (!chart.isDisposed()) {
+      chart.resize();
+      fitChartCenter(chart);
+    }
   });
 });
 ["categoryChart", "shareChart", "salesChart"].forEach((id) =>

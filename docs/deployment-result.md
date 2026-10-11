@@ -43,3 +43,11 @@ HK Nginx 仅在备货 location 中补充 gzip，配置校验通过并平滑 relo
 详细验收见 `acceptance-v2.md`。截图 `v2-production-overview.png`、`v2-production-plan.png`、`v2-production-mobile.png`；实际采购建议 Excel `v2-production-purchase.xlsx`。
 
 最后视觉复核：长商品名与 SKU 在真实 table cell 内上下排列，SKU 列保留 230px 可读宽度；桌面及 390px 移动端复核通过。
+
+## 2026-10-11 分类配置与筛选调整
+
+已上线 SKU 分类管理和紧凑筛选栏；引导性副文案移除，并在工作区与项目 AGENTS.md 中记录长期 ERP 文案规范。衣架、脏衣篓为一次性初始化配置，名称、图标、排序及匹配规则由页面维护，支持逐项/批量确认归类。
+
+23 项 Python 测试在本地及香港 Python 3.10 环境通过。隔离浏览器验证配置 CRUD、批量分类、自动匹配与人工确认保护、计划锁定及 Excel 兼容性；公网页面复核筛选、60 个 SKU 分页、规则编辑、搜索及 390px 移动端，无 JavaScript 错误。五个数据连接均正常，服务 active，生产未写入测试分类或计划。
+
+升级前备份：`/home/fanghaizhou/pangu-restock-manager/backups/classification-20261011-100929/`。在数据库副本中校验计划、SKU 资料、类目原字段、备货规则和设置均保留，生产数据库完整性检查通过。项目已配置 `git@github.com:fangwater/pangu-restock-manager.git` 的 main 分支；运行数据、环境文件、备份和业务导出不入库。

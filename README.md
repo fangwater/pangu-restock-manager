@@ -52,6 +52,8 @@ python3 app.py
 
 默认监听 `127.0.0.1:18110`，SQLite `data/restock.sqlite3`。生产服务 `pangu-restock-manager.service`，数据目录 700、数据库 600。备份使用 SQLite backup API；在线直接复制主文件会漏掉 WAL 写入。
 
+部署包含 `app.py`、`reporting.py`、`excel_export.py`、`config/category-presets.json` 和 `web/`；旧库会自动补齐类目图标及规则字段，保留原类目名称、产品资料和计划。配置变更通过页面维护，初始化文件不会覆盖现有配置。
+
 HK Nginx `/pangu-restock/` → 本地 18110；pangutech HTTPS 入口 → HK Nginx。应用与本地数据均在 HK。中台服务沿用已有 PM2 实例，不另启动旧 systemd 中台单元。
 
 ## 本地 API

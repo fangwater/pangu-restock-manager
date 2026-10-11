@@ -51,13 +51,19 @@ def infer_product(sku, name='', variant='', categories=None):
     text = (sku + ' ' + name).lower()
     category = 'uncategorized'
     ordered = sorted(categories or [], key=lambda c: (c.get('sort_order', 0), c['code']))
-    for field in ('sku_prefixes', 'keywords'):
-        matched = next((c for c in ordered if c['code'] != 'uncategorized' and any(
-            sku.lower().startswith(token.lower()) if field == 'sku_prefixes' else token.lower() in text
-            for token in c.get('match_rules', {}).get(field, []))), None)
-        if matched:
-            category = matched['code']
-            break
+    matched = next((c for c in ordered if c['code'] != 'uncategorized' and any(
+        sku.lower().startswith(token.lower()) for token in c.get('match_rules', {}).get('sku_prefixes', []))), None)
+    if matched is None:
+        # Specific product phrases must outrank incidental generic words in titles.
+        # For example, "Laundry Basket ... High Hanger" is a laundry basket.
+        candidates = [(len(token), position, c) for position, c in enumerate(ordered)
+                      if c['code'] != 'uncategorized'
+                      for token in c.get('match_rules', {}).get('keywords', [])
+                      if token and token.lower() in text]
+        if candidates:
+            matched = min(candidates, key=lambda item: (-item[0], item[1]))[2]
+    if matched:
+        category = matched['code']
     # Structured warehouse SKU tokens are more reliable than generic product titles.
     colors = ('Navy Blue', 'Ivory', 'Beige', 'Black', 'White', 'Pink', 'Gray', 'Grey', 'Red', 'Blue', 'Green', 'Brown', 'Purple')
     tokens = sku.split('-')

@@ -51,3 +51,11 @@ HK Nginx 仅在备货 location 中补充 gzip，配置校验通过并平滑 relo
 23 项 Python 测试在本地及香港 Python 3.10 环境通过。隔离浏览器验证配置 CRUD、批量分类、自动匹配与人工确认保护、计划锁定及 Excel 兼容性；公网页面复核筛选、60 个 SKU 分页、规则编辑、搜索及 390px 移动端，无 JavaScript 错误。五个数据连接均正常，服务 active，生产未写入测试分类或计划。
 
 升级前备份：`/home/fanghaizhou/pangu-restock-manager/backups/classification-20261011-100929/`。在数据库副本中校验计划、SKU 资料、类目原字段、备货规则和设置均保留，生产数据库完整性检查通过。项目已配置 `git@github.com:fangwater/pangu-restock-manager.git` 的 main 分支；运行数据、环境文件、备份和业务导出不入库。
+
+## 2026-10-11 界面整体复核
+
+统一灰白/蓝色 ERP 样式及网格筛选栏；移除每类目一张卡片，采用 ECharts 类目/店铺环形图和销量趋势图，统计合并为一组指标，数据连接改为表格。分类、规则、抽屉和弹窗共用视觉组件。
+
+部署前数据库与代码备份位于 `/home/fanghaizhou/pangu-restock-manager/backups/ui-review-20261011-103604/`。生产确认三个 `SP+D-...-41CM` SKU 为烤盘，新增可配置烤盘类目并确认归属；两个标题同时含 Laundry Basket / High Hanger 的脏衣篓已恢复并确认原类目。关键词冲突规则采用最长匹配，避免通用词覆盖具体产品名称。
+
+24 项后台测试及浏览器布局、图表、下钻、保存、零销量和移动端验证通过。图表脚本随应用部署，许可证已入库。详见 `ui-review.md`。

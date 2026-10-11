@@ -44,6 +44,14 @@ class CategoryConfigurationTests(unittest.TestCase):
         with self.assertRaises(app.APIError):self.store.save_catalogs(changes)
         self.assertEqual(self.store.master_data()[0]['PH+H-10Pcs-White']['category'],'hanger')
         with self.store.connection() as db:self.assertEqual(db.execute('SELECT count(*) FROM audit').fetchone()[0],0)
+    def test_specific_product_phrase_beats_incidental_generic_word(self):
+        title = '1/2 Pack Large Laundry Basket With Foldable Laundry Bag, Independent High Hanger'
+        categories = self.store.master_data()[1]
+        self.assertEqual(infer_product('opaque-id', title, categories=categories)['category'], 'hamper')
+        self.assertEqual(infer_product('LB-new', 'Clothes Hanger', categories=categories)['category'], 'hamper')
+        self.store.seed_catalog([dict(sku='opaque-id', name=title, category='hanger', color='', spec='')])
+        self.save(**self.category('hamper'))
+        self.assertEqual(self.store.master_data()[0]['opaque-id']['category'], 'hamper')
     def test_delete_empty_category_does_not_reappear_and_references_are_protected(self):
         c=self.save(code='empty',name='空类目',icon='package',sort_order=100,version=0,match_rules={})
         self.store.remove_category('empty',c['version'])

@@ -1,0 +1,344 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="theme-color" content="#6b5ce7" />
+    <title>Pangu · 备货管理</title>
+    <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="app.css?v=4" />
+    <script defer src="vendor/lucide.min.js"></script>
+    <script defer src="vendor/chart.umd.min.js"></script>
+    <script defer src="app.js?v=4"></script>
+  </head>
+  <body>
+    <aside class="sidebar" id="sidebar">
+      <a class="brand" href="./"
+        ><span class="brand-mark"><i data-lucide="boxes"></i></span
+        ><span>Pangu<span class="brand-sub">备货管理 · RESTOCK</span></span></a
+      >
+      <div class="nav-label">工作空间</div>
+      <nav aria-label="主导航">
+        <button class="nav-item active" data-view="overview">
+          <i data-lucide="layout-dashboard"></i>备货总览<span class="nav-arrow"
+            >↗</span
+          >
+        </button>
+        <button class="nav-item" data-view="plans">
+          <i data-lucide="clipboard-list"></i>备货计划<span
+            id="planNavCount"
+            class="nav-count"
+            >0</span
+          >
+        </button>
+        <button class="nav-item" data-view="classification">
+          <i data-lucide="tags"></i>SKU 分类
+        </button>
+        <button class="nav-item" data-view="catalog">
+          <i data-lucide="tags"></i>产品资料
+        </button>
+        <button class="nav-item" data-view="rules">
+          <i data-lucide="sliders-horizontal"></i>备货规则
+        </button>
+        <button class="nav-item" data-view="sources">
+          <i data-lucide="network"></i>数据连接
+        </button>
+      </nav>
+      <div class="sidebar-bottom">
+        <span class="server-dot"></span>
+        <div><strong>Hong Kong</strong><span>本地维护 · 自动同步</span></div>
+        <span class="hk">HK</span>
+      </div>
+    </aside>
+    <div class="main-shell">
+      <header class="topbar">
+        <div class="breadcrumb">
+          <button
+            class="icon-button mobile-menu"
+            id="menu"
+            aria-label="展开菜单"
+          >
+            <i data-lucide="menu"></i></button
+          ><span>工作空间</span><i data-lucide="chevron-right"></i
+          ><strong id="breadcrumbTitle">备货总览</strong>
+        </div>
+        <div class="topbar-right">
+          <span class="connection" id="connection"><span></span>正在连接</span
+          ><span class="topbar-divider"></span><span class="avatar">P</span
+          ><span class="team-name">Pangu 团队</span>
+        </div>
+      </header>
+      <main>
+        <section class="page-heading">
+          <div>
+            <h1 id="pageTitle">备货总览<span class="title-dot">.</span></h1>
+          </div>
+          <div class="page-actions">
+            <button class="button" id="settingsButton">
+              <i data-lucide="sliders-horizontal"></i>备货规则</button
+            ><button class="button primary" id="syncButton">
+              <i data-lucide="refresh-cw"></i><span>同步数据</span>
+            </button>
+          </div>
+        </section>
+        <div id="loadError" class="error-banner" hidden role="alert"></div>
+        <section class="panel filter-panel" id="periodToolbar">
+          <div class="filter-row">
+            <div class="date-filter">
+              <label for="preset">日期</label>
+              <div class="date-controls">
+                <select id="preset" aria-label="快捷日期">
+                  <option value="last7">近7天</option>
+                  <option value="last30" selected>近30天</option>
+                  <option value="last90">近90天</option>
+                  <option value="current_quarter">本季度</option>
+                  <option value="previous_quarter">上季度</option>
+                  <option value="custom">自定义</option>
+                </select>
+                <div class="date-inputs">
+                  <input
+                    type="date"
+                    id="startDate"
+                    aria-label="开始日期"
+                  /><span>至</span
+                  ><input type="date" id="endDate" aria-label="结束日期" />
+                </div>
+              </div>
+            </div>
+            <div class="compact-filter">
+              <span>店铺</span>
+              <details id="shopSelect" class="check-dropdown">
+                <summary id="shopSummary">全部店铺</summary>
+                <div class="dropdown-options" id="shopOptions"></div>
+              </details>
+            </div>
+            <label class="compact-filter"
+              >类目<select id="categorySelect">
+                <option value="all">全部类目</option>
+              </select></label
+            >
+            <div class="compact-filter">
+              <span>订单状态</span>
+              <details id="statusSelect" class="check-dropdown">
+                <summary id="statusSummary">全部有效状态</summary>
+                <div class="dropdown-options">
+                  <label
+                    ><input
+                      type="checkbox"
+                      value="pending"
+                      checked
+                    />待发货</label
+                  ><label
+                    ><input
+                      type="checkbox"
+                      value="shipped"
+                      checked
+                    />已发货</label
+                  ><label
+                    ><input
+                      type="checkbox"
+                      value="completed"
+                      checked
+                    />已完成</label
+                  >
+                </div>
+              </details>
+            </div>
+            <div class="filter-actions">
+              <button class="button primary" id="queryButton">
+                <i data-lucide="search"></i>查询</button
+              ><button class="button" id="resetQuery">重置</button>
+            </div>
+          </div>
+          <div class="filter-meta">
+            <span id="dateRange">近30天</span><span>北京时间</span
+            ><span id="filterPending"></span>
+          </div>
+        </section>
+        <section
+          class="category-grid"
+          id="categoryGrid"
+          aria-label="类目总览"
+        ></section>
+        <section class="stats-grid" id="statsGrid" aria-label="备货统计">
+          <article class="stat-card">
+            <div class="stat-top">
+              <span>订单总销量</span
+              ><span class="stat-icon purple"
+                ><i data-lucide="shopping-bag"></i
+              ></span>
+            </div>
+            <div class="stat-value" id="totalSales">—</div>
+            <div class="stat-foot" id="salesFoot">按订单 quantity 统计件数</div>
+            <div class="stat-decoration bars">
+              <b></b><b></b><b></b><b></b><b></b><b></b><b></b>
+            </div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-top">
+              <span>在售 SKU</span
+              ><span class="stat-icon blue"><i data-lucide="package"></i></span>
+            </div>
+            <div class="stat-value" id="activeSkus">—</div>
+            <div class="stat-foot" id="skuFoot">统计期内有销量的 SKU</div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-top">
+              <span>建议备货数量</span
+              ><span class="stat-icon amber"
+                ><i data-lucide="package-plus"></i
+              ></span>
+            </div>
+            <div class="stat-value" id="suggestedTotal">—</div>
+            <div class="stat-foot" id="suggestionFoot">等待销量与库存同步</div>
+          </article>
+          <article class="stat-card">
+            <div class="stat-top">
+              <span>待完成备货</span
+              ><span class="stat-icon green"
+                ><i data-lucide="clipboard-check"></i
+              ></span>
+            </div>
+            <div class="stat-value" id="plannedTotal">—</div>
+            <div class="stat-foot" id="planFoot">已保存的本地备货计划</div>
+          </article>
+        </section>
+        <section class="charts-grid" id="chartsGrid">
+          <article class="panel trend-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>销量趋势 <span class="subtle-tag">按日</span></h2>
+              </div>
+              <div class="chart-legend">
+                <span><b class="home-color"></b>HOME</span
+                ><span><b class="buy-color"></b>BUY</span
+                ><span><b class="shein-color"></b>希音</span>
+              </div>
+            </div>
+            <div class="trend-chart">
+              <canvas
+                id="salesChart"
+                aria-label="三店每日销量折线图"
+                role="img"
+              ></canvas>
+            </div>
+          </article>
+          <article class="panel split-panel">
+            <div class="panel-heading">
+              <div>
+                <h2>店铺销量占比</h2>
+                <p>订单总销量构成</p>
+              </div>
+              <i data-lucide="chart-pie"></i>
+            </div>
+            <div class="split-body">
+              <div class="donut-wrap">
+                <canvas
+                  id="shareChart"
+                  aria-label="店铺销量占比"
+                  role="img"
+                ></canvas>
+                <div class="donut-center">
+                  <strong>3</strong><span>个店铺</span>
+                </div>
+              </div>
+              <div class="split-legend" id="splitLegend"></div>
+            </div>
+            <div class="split-footer">
+              <i data-lucide="git-merge"></i>同一仓库 SKU，跨店统一汇总
+            </div>
+          </article>
+        </section>
+        <section class="panel sku-panel" id="skuPanel">
+          <div class="sku-panel-heading">
+            <div><h2 id="tableTitle">SKU 销量与备货</h2></div>
+            <div class="export-actions">
+              <button class="button small" id="purchaseExport">
+                <i data-lucide="file-spreadsheet"></i>采购建议单</button
+              ><button class="button small" id="exportButton">
+                <i data-lucide="download"></i>销量 Excel
+              </button>
+            </div>
+          </div>
+          <div class="table-toolbar">
+            <div class="search-box">
+              <i data-lucide="search"></i
+              ><input
+                id="search"
+                placeholder="搜索 SKU、颜色或规格"
+                aria-label="搜索 SKU、颜色或规格"
+              /><kbd>/</kbd>
+            </div>
+            <div class="table-filters">
+              <select id="stockFilter" aria-label="库存筛选">
+                <option value="all">全部库存状态</option>
+                <option value="urgent">需优先备货</option>
+                <option value="active">有销量的 SKU</option>
+                <option value="unplanned">尚未创建计划</option></select
+              ><select id="shareMode" aria-label="占比维度">
+                <option value="category_share">类目内占比</option>
+                <option value="global_share">全局占比</option></select
+              ><select id="sort" aria-label="排序">
+                <option value="sales">销量从高到低</option>
+                <option value="suggested">建议备货从高到低</option>
+                <option value="sku">SKU 字母顺序</option></select
+              ><button class="button small" id="recomputeButton">
+                <i data-lucide="refresh-cw"></i>重算未锁定</button
+              ><button class="button small tinted" id="bulkButton" disabled>
+                <i data-lucide="check-check"></i><span>采用建议</span>
+              </button>
+            </div>
+          </div>
+          <div class="table-scroll">
+            <table>
+              <thead id="tableHead"></thead>
+              <tbody id="tableBody">
+                <tr>
+                  <td colspan="10">
+                    <div class="empty-state">
+                      <div class="spinner"></div>
+                      <strong>正在获取真实业务数据</strong>
+                      <p>首次同步完成后显示销量与库存</p>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+          <div class="table-footer">
+            <span id="tableCount">正在加载…</span>
+            <div class="pagination">
+              <button id="prevPage" class="icon-button" aria-label="上一页">
+                <i data-lucide="chevron-left"></i></button
+              ><span id="pageInfo">1 / 1</span
+              ><button id="nextPage" class="icon-button" aria-label="下一页">
+                <i data-lucide="chevron-right"></i>
+              </button>
+            </div>
+          </div>
+        </section>
+        <section id="sourcesPage" hidden></section>
+        <footer class="page-footer">
+          <span
+            ><i data-lucide="database"></i
+            ><span id="syncStamp">数据自动同步中</span></span
+          ><button class="text-button" id="sourceLink">
+            查看数据来源 <i data-lucide="arrow-up-right"></i>
+          </button>
+        </footer>
+        <div class="method-note" id="methodNote"></div>
+      </main>
+    </div>
+    <div id="drawerBackdrop" class="drawer-backdrop" hidden></div>
+    <aside
+      id="drawer"
+      class="drawer"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="drawerTitle"
+      hidden
+    ></aside>
+    <dialog id="settingsDialog"></dialog>
+    <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
+  </body>
+</html>

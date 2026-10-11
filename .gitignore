@@ -1,0 +1,9 @@
+data/
+__pycache__/
+*.pyc
+.env*
+backups/
+*.log
+docs/*.png
+docs/*.xlsx
+test-results/

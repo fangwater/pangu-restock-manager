@@ -300,15 +300,20 @@ class Manager:
         return envelope
 
     def sales(self):
-        data = self.get(self.sales_url + '/api/restock/snapshot?days=730')['data']
-        if data.get('version') != 2 or not isinstance(data.get('points'), list) or data.get('timezone') != 'Asia/Shanghai':
+        data = self.get(self.sales_url + '/api/restock/snapshot?days=730&version=3')['data']
+        if data.get('version') != 3 or not isinstance(data.get('points'), list) or data.get('timezone') != 'Asia/Shanghai':
             raise ValueError('销量快照格式或时区不正确')
         for p in data['points']:
             if not isinstance(p.get('shop'), str) or not p['shop'] or not isinstance(p.get('sku'), str) or not p['sku']:
                 raise ValueError('销量快照包含无效 SKU/店铺')
+            if not isinstance(p.get('sales_sku'), str) or not p['sales_sku']:
+                raise ValueError('销量快照缺少销售 SKU')
             datetime.strptime(p['date'], '%Y-%m-%d')
             if any(not isinstance(p.get(k), (int, float)) or not math.isfinite(p[k]) or p[k] < 0 for k in ('units', 'warehouse_units')):
                 raise ValueError('销量快照包含无效数量')
+            factor = p.get('conversion_factor')
+            if not isinstance(factor, (int, float)) or not math.isfinite(factor) or factor <= 0 or not math.isclose(p['units'] * factor, p['warehouse_units'], rel_tol=1e-8, abs_tol=1e-4):
+                raise ValueError('销量快照换算数量不一致')
         return data, {'rows': len(data['points']), 'generated_at': data['generated_at'], 'sources': data['sources']}
 
     def inventory(self):
@@ -362,6 +367,8 @@ class Manager:
                             if name in ('sales', 'inventory'):
                                 products = data['points'] if name == 'sales' else data
                                 unique = {p['sku']: p for p in products}
+                                if name == 'sales':
+                                    unique.update({p['sales_sku']: {**p, 'sku': p['sales_sku']} for p in products})
                                 categories = self.store.master_data()[1]
                                 self.store.seed_catalog([infer_product(p['sku'], p.get('name', p.get('product_name', '')), p.get('variant', ''), categories) for p in unique.values()])
                         except Exception as error:
@@ -476,7 +483,7 @@ class Manager:
         if not isinstance(note, str) or len(note) > 1000:
             raise APIError('备注最多 1000 字')
         if mode == 'sales':
-            weights = row['sales']
+            weights = row['warehouse_sales']
         else:
             raw = payload.get('weights')
             keys = [s['key'] for s in dashboard['shops']]
@@ -563,7 +570,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not row:
                     raise APIError('SKU 不存在', 404)
                 snapshots, _, _, _ = self.manager.store.read()
-                points = [p for p in snapshots.get('sales', {}).get('data', {}).get('points', []) if p['sku'] == sku and dashboard['range']['start'] <= p['date'] <= dashboard['range']['end']]
+                points = [p for p in snapshots.get('sales', {}).get('data', {}).get('points', [])
+                          if (p['sku'] == sku or p.get('sales_sku') == sku)
+                          and dashboard['range']['start'] <= p['date'] <= dashboard['range']['end']
+                          and p['shop'] in dashboard['filters']['shops']
+                          and p.get('status', 'pending') in dashboard['filters']['statuses']]
                 with self.manager.store.connection() as db:
                     history = [{**dict(r), 'after': json.loads(r['after_json'])} for r in db.execute('SELECT id,action,after_json,created_at FROM audit WHERE sku=? ORDER BY id DESC LIMIT 20', (sku,))]
                 self.reply({'row': row, 'points': points, 'history': history})

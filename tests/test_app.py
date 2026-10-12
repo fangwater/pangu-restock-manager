@@ -38,7 +38,7 @@ class StoreAndAnalyticsTests(unittest.TestCase):
         # A 30-day window includes today and day -29, but excludes day -30.
         points += [{'date': str(today-timedelta(days=29)), 'shop': 'home', 'sku': 'SKU-A', 'name': '商品', 'units': 30},
                    {'date': str(today-timedelta(days=30)), 'shop': 'buy', 'sku': 'SKU-A', 'name': '商品', 'units': 300}]
-        self.store.source('sales', data={'points': points, 'start': str(today-timedelta(days=89)), 'end': str(today), 'sources': []})
+        self.store.source('sales', data={'version': 3, 'points': [dict(p, sales_sku=p['sku']) for p in points], 'start': str(today-timedelta(days=89)), 'end': str(today), 'sources': []})
         self.store.source('inventory', data=[{'sku': 'SKU-A', 'product_name': '商品', 'available_amount': 10, 'transport_amount': 5, 'warehouses': {}}, {'sku': 'SKU-Z', 'product_name': '暂无销量', 'available_amount': 0, 'transport_amount': 0, 'warehouses': {}}])
 
     def tearDown(self):

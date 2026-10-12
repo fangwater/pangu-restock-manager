@@ -82,7 +82,8 @@ def report_workbook(report, kind):
                 ['窗口天数', filters['days']], ['店铺', '、'.join(shop_names[k] for k in filters['shops'])],
                 ['类目', category_names.get(filters['category'], '全部类目')], ['订单状态', '、'.join(report['statuses'][s] for s in filters['statuses'])],
                 ['搜索', filters.get('q', '')], ['占比基数', '订单实际售出 quantity，取消/退款订单剔除'],
-                ['备货单位', '仓库 SKU 单位，销量换算至相同库存单位'],
+                ['销量归属', '按销售 SKU 汇总原始订单件数；不同包装规格不并入仓库 SKU 销量'],
+                ['备货单位', '按仓库 SKU 汇总各销售 SKU 数量 × 对应换算系数'],
                 ['备货公式', '日均仓库需求 × 覆盖天数 × (1 + 安全系数) − 可售库存 − 计入在途，再向上取整至箱规倍数'],
                 ['全局占比分母', '当前日期、店铺及订单状态下全部类目的销量；类目与搜索筛选不改变分母'],
                 ['百分比舍入', '采用最大余数法保留两位小数，确保同一完整维度合计为 100%'],
@@ -92,13 +93,16 @@ def report_workbook(report, kind):
     categories.append(['合计', report['summary']['global_total'], Percent(1 if report['summary']['global_total'] else 0), sum(c['sku_count'] for c in report['categories'])])
     shops = filters['shops']
     detail = [['类目内排名', 'SKU', '一级类目', '颜色', '规格', *[shop_names[k] + ' 销量' for k in shops], '销量（订单件数）', '类目内占比', '全局占比', '仓库换算需求', '可售库存', '在途库存', '建议备货', '箱规', '计划数量', '计划锁定']]
-    purchase = [['SKU', '一级类目', '颜色', '规格', '最新建议量', '采购数量', '数量来源', '日均订单件数', '日均仓库需求', '销量换算系数', '覆盖天数', '安全系数', '可售库存', '抵扣在途', '箱规', '箱数', '计算日期范围', '依据保存时间', '备注']]
+    purchase = [['SKU', '一级类目', '颜色', '规格', '最新建议量', '采购数量', '数量来源', '日均本 SKU 销量', '日均仓库需求', '覆盖天数', '安全系数', '可售库存', '抵扣在途', '箱规', '箱数', '计算日期范围', '依据保存时间', '备注']]
+    demand = [['依据', '仓库 SKU', '店铺', '销售 SKU', '订单销量', '换算系数', '仓库需求', '开始日期', '结束日期']]
     rows = report['rows']
     if filters.get('q'):
         q = filters['q'].lower()
         rows = [r for r in rows if q in (r['sku'] + ' ' + r['name'] + ' ' + r['color'] + ' ' + r['spec']).lower()]
     for row in rows:
         p = row['plan']
+        for source in row['demand_sources']:
+            demand.append(['当前统计', row['sku'], shop_names[source['shop']], source['sales_sku'], source['units'], source['conversion_factor'], source['warehouse_units'], filters['start'], filters['end']])
         detail.append([row['rank'], row['sku'], row['category_name'], row['color'], row['spec'], *[row['sales'][k] for k in shops], row['total'], Percent(row['category_share'] / 100), Percent(row['global_share'] / 100), row['warehouse_total'], row['available'], row['in_transit'], row['suggested'], row['basis']['box_size'], p['quantity'] if p else None, bool(p and p.get('locked'))])
         if (p and p['status'] != 'completed' and p['quantity'] > 0) or (not p and row['suggested'] and row['suggested'] > 0):
             basis = (p.get('basis') or {}) if p else row['basis']
@@ -107,10 +111,13 @@ def report_workbook(report, kind):
             box = basis.get('box_size')
             purchase.append([row['sku'], row['category_name'], row['color'], row['spec'], row['suggested'], qty,
                              '锁定计划' if p and p.get('locked') else '已保存计划' if p else '自动建议',
-                             basis.get('order_daily_rate'), basis.get('daily_rate'), basis.get('conversion_ratio'), basis.get('target_days'),
+                             basis.get('order_daily_rate'), basis.get('daily_rate'), basis.get('target_days'),
                              Percent(basis.get('safety_factor', 0)), basis.get('available'), basis.get('in_transit_deducted'), box,
                              qty / box if box else None, f"{window.get('start', '旧计划未记录')} — {window.get('end', '')}", basis.get('calculated_at'), p.get('note', '') if p else row['suggestion_reason']])
-    return workbook([('筛选与口径', metadata), ('类目占比', categories), ('SKU销量', detail), ('采购建议', purchase)])
+            if p:
+                for source in basis.get('demand_sources', []):
+                    demand.append(['已保存计划', row['sku'], shop_names.get(source['shop'], source['shop']), source['sales_sku'], source['units'], source['conversion_factor'], source['warehouse_units'], window.get('start'), window.get('end')])
+    return workbook([('筛选与口径', metadata), ('类目占比', categories), ('SKU销量', detail), ('采购建议', purchase), ('仓库需求明细', demand)])
 
 
 class ExportQueue:

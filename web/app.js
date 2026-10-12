@@ -241,7 +241,7 @@ function filteredRows() {
   const stock = $("stockFilter").value;
   if (stock === "urgent")
     rows = rows.filter((r) => ["out", "low"].includes(r.stock_status));
-  if (stock === "active") rows = rows.filter((r) => r.total > 0);
+  if (stock === "active") rows = rows.filter((r) => r.total > 0 || r.warehouse_total > 0);
   if (stock === "unplanned") rows = rows.filter((r) => !r.plan);
   if (state.view === "plans") rows = rows.filter((r) => r.plan);
   return [...rows].sort((a, b) => {
@@ -278,16 +278,16 @@ function renderTable() {
   const shareKey = $("shareMode").value;
   $("tableHead").innerHTML = catalog
     ? "<tr><th>SKU / 商品</th><th>一级类目</th><th>颜色</th><th>规格</th><th>箱规</th><th>覆盖天数</th><th>资料状态</th><th>操作</th></tr>"
-    : `<tr><th><input class="table-check" type="checkbox" id="selectPage" aria-label="选中本页未建计划 SKU"></th><th>${sortHeader("SKU / 商品", "sku")}</th><th>类目 / 颜色 / 规格</th>${shops.map((k) => `<th>${esc(state.data.shops.find((s) => s.key === k).name)}销量</th>`).join("")}<th>${sortHeader("总销量", "total")}</th><th>${sortHeader(shareKey === "category_share" ? "类目内占比" : "全局占比", shareKey)}</th><th>${sortHeader("可售库存", "available")}</th><th>${sortHeader("建议备货", "suggested")}</th><th>计划数量 / 状态</th><th>操作</th></tr>`;
+    : `<tr><th><input class="table-check" type="checkbox" id="selectPage" aria-label="选中本页未建计划 SKU"></th><th>${sortHeader("SKU / 商品", "sku")}</th><th>类目 / 颜色 / 规格</th>${shops.map((k) => `<th>${esc(state.data.shops.find((s) => s.key === k).name)}销量</th>`).join("")}<th>${sortHeader("总销量", "total")}</th><th>${sortHeader("仓库需求", "warehouse_total")}</th><th>${sortHeader(shareKey === "category_share" ? "类目内占比" : "全局占比", shareKey)}</th><th>${sortHeader("可售库存", "available")}</th><th>${sortHeader("建议备货", "suggested")}</th><th>计划数量 / 状态</th><th>操作</th></tr>`;
   $("tableBody").innerHTML = rows.length
     ? rows
         .map((r) =>
           catalog
             ? `<tr><td class="sku-cell"><strong class="sku-name">${esc(r.sku)}</strong><div class="row-sub">${esc(r.name)}</div></td><td>${esc(r.category_name)}</td><td>${esc(r.color) || "—"}</td><td>${esc(r.spec) || "—"}</td><td>${num(r.product.box_size)}${r.product.box_size ? "" : " · 继承"}</td><td>${num(r.product.target_days)}${r.product.target_days ? " 天" : " · 继承"}</td><td><span class="badge ${r.product.confirmed ? "ok" : "warn"}">${r.product.confirmed ? "已确认" : "自动识别"}</span></td><td><button class="button small" data-catalog="${esc(r.sku)}">维护资料</button></td></tr>`
-            : `<tr><td><input type="checkbox" class="table-check row-select" data-sku="${esc(r.sku)}" ${state.selected.has(r.sku) ? "checked" : ""} ${r.plan || r.suggested == null || r.suggested <= 0 ? "disabled" : ""} aria-label="选择 ${esc(r.sku)}"></td><td class="sku-cell"><strong class="sku-name">${esc(r.sku)}</strong><div class="row-sub">${esc(r.name)}</div></td><td>${esc(r.category_name)}<div class="row-sub">${esc(r.color) || "—"} · ${esc(r.spec) || "—"}</div></td>${shops.map((k) => `<td>${num(r.sales[k])}<div class="row-sub">${pct(r.shares[k])} / SKU</div></td>`).join("")}<td><strong>${num(r.total)}</strong><div class="row-sub">类目排名 #${r.rank}</div></td><td class="share-cell"><b>${pct(r[shareKey])}</b><div class="track"><span style="width:${r[shareKey]}%"></span></div><span class="row-sub">${shareKey === "category_share" ? "全局" : "类目"} ${pct(r[shareKey === "category_share" ? "global_share" : "category_share"])}</span></td><td>${num(r.available)}<div class="row-sub">${r.coverage == null ? (r.has_inventory ? "全仓合计" : "未映射库存") : `约 ${num(r.coverage)} 天`}</div></td><td title="${esc(r.suggestion_reason)}"><strong>${num(r.suggested)}</strong><div class="row-sub">${r.suggested == null ? "待补齐数据" : `箱规 ${r.basis.box_size} · ${num((r.suggested || 0) / r.basis.box_size)} 箱`}</div></td><td>${r.plan ? `<strong>${num(r.plan.quantity)}</strong><div class="row-sub">${statuses[r.plan.status]} · ${r.plan.locked ? "已锁定" : "未锁定"}</div>` : '<span class="row-sub">尚未保存</span>'}</td><td><div class="row-actions"><button class="button small tinted" data-plan="${esc(r.sku)}">${r.plan ? "查看计划" : "备货"}</button><button class="button small" data-catalog="${esc(r.sku)}" aria-label="维护 ${esc(r.sku)} 资料"><i data-lucide="tags"></i></button></div></td></tr>`,
+            : `<tr><td><input type="checkbox" class="table-check row-select" data-sku="${esc(r.sku)}" ${state.selected.has(r.sku) ? "checked" : ""} ${r.plan || r.suggested == null || r.suggested <= 0 ? "disabled" : ""} aria-label="选择 ${esc(r.sku)}"></td><td class="sku-cell"><strong class="sku-name">${esc(r.sku)}</strong><div class="row-sub">${esc(r.name)}</div></td><td>${esc(r.category_name)}<div class="row-sub">${esc(r.color) || "—"} · ${esc(r.spec) || "—"}</div></td>${shops.map((k) => `<td>${num(r.sales[k])}<div class="row-sub">仓库需求 ${num(r.warehouse_sales[k])}</div></td>`).join("")}<td><strong>${num(r.total)}</strong><div class="row-sub">类目排名 #${r.rank}</div></td><td>${num(r.warehouse_total)}</td><td class="share-cell"><b>${pct(r[shareKey])}</b><div class="track"><span style="width:${r[shareKey]}%"></span></div><span class="row-sub">${shareKey === "category_share" ? "全局" : "类目"} ${pct(r[shareKey === "category_share" ? "global_share" : "category_share"])}</span></td><td>${num(r.available)}<div class="row-sub">${r.coverage == null ? (r.has_inventory ? "全仓合计" : "未映射库存") : `约 ${num(r.coverage)} 天`}</div></td><td title="${esc(r.suggestion_reason)}"><strong>${num(r.suggested)}</strong><div class="row-sub">${r.suggested == null ? "待补齐数据" : `箱规 ${r.basis.box_size} · ${num((r.suggested || 0) / r.basis.box_size)} 箱`}</div></td><td>${r.plan ? `<strong>${num(r.plan.quantity)}</strong><div class="row-sub">${statuses[r.plan.status]} · ${r.plan.locked ? "已锁定" : "未锁定"}</div>` : '<span class="row-sub">尚未保存</span>'}</td><td><div class="row-actions"><button class="button small tinted" data-plan="${esc(r.sku)}">${r.plan ? "查看计划" : "备货"}</button><button class="button small" data-catalog="${esc(r.sku)}" aria-label="维护 ${esc(r.sku)} 资料"><i data-lucide="tags"></i></button></div></td></tr>`,
         )
         .join("")
-    : `<tr><td colspan="${8 + shops.length}"><div class="empty-state"><i data-lucide="search-x"></i><strong>${state.view === "plans" ? "暂无备货计划" : "没有符合条件的数据"}</strong></div></td></tr>`;
+    : `<tr><td colspan="${10 + shops.length}"><div class="empty-state"><i data-lucide="search-x"></i><strong>${state.view === "plans" ? "暂无备货计划" : "没有符合条件的数据"}</strong></div></td></tr>`;
   $("tableCount").textContent = `共 ${all.length} 个 SKU · 第 ${state.page} 页`;
   $("pageInfo").textContent = `${state.page} / ${pages}`;
   $("prevPage").disabled = state.page === 1;
@@ -580,7 +580,7 @@ function showDrawer(html) {
 }
 function basisHtml(b, filters) {
   const facts = [
-    ["统计订单件数", num(b.order_sales)],
+    ["本 SKU 销量", num(b.order_sales)],
     ["仓库换算需求", num(b.warehouse_sales)],
     ["日均订单件数", num(b.order_daily_rate)],
     ["日均仓库需求", num(b.daily_rate)],
@@ -589,9 +589,17 @@ function basisHtml(b, filters) {
     ["全仓可售库存", num(b.available)],
     ["抵扣在途", num(b.in_transit_deducted)],
     ["箱规", `${num(b.box_size)} / 箱`],
-    ["换算系数", num(b.conversion_ratio)],
   ];
-  return `<div class="basis-grid">${facts.map(([k, v]) => `<div><span>${k}</span><strong>${v}</strong></div>`).join("")}</div><div class="basis-copy">${esc(filters?.start || "未记录")} — ${esc(filters?.end || "")}<br>日均仓库需求 × 覆盖天数 × (1 + 安全系数) − 可售库存 − 计入在途，向上取整至箱规倍数。<br>计算时间：${esc(formatTime(b.calculated_at))}</div>`;
+  if (b.version !== 3) facts.push(["原始换算系数", num(b.conversion_ratio)]);
+  return `<div class="basis-grid">${facts.map(([k, v]) => `<div><span>${k}</span><strong>${v}</strong></div>`).join("")}</div><div class="basis-copy">${esc(filters?.start || "未记录")} — ${esc(filters?.end || "")}<br>日均仓库需求 × 覆盖天数 × (1 + 安全系数) − 可售库存 − 计入在途，向上取整至箱规倍数。<br>计算时间：${esc(formatTime(b.calculated_at))}</div>${demandHtml(b)}`;
+}
+function demandHtml(b) {
+  const shopName = (key) => state.data.shops.find((s) => s.key === key)?.name || key;
+  const sources = b.demand_sources || [];
+  const destinations = (b.sales_destinations || []).filter((d) => d.warehouse_sku !== state.drawerSku);
+  let html = sources.length ? `<h3>仓库需求来源</h3><div class="table-scroll"><table><thead><tr><th>店铺 / 销售 SKU</th><th>销量</th><th>系数</th><th>仓库需求</th></tr></thead><tbody>${sources.map((s) => `<tr><td>${esc(shopName(s.shop))}<div class="row-sub">${esc(s.sales_sku)}</div></td><td>${num(s.units)}</td><td>${num(s.conversion_factor)}</td><td>${num(s.warehouse_units)}</td></tr>`).join("")}</tbody></table></div>` : "";
+  if (destinations.length) html += `<h3>其他仓库 SKU 承接的需求</h3><div class="table-scroll"><table><thead><tr><th>店铺 / 仓库 SKU</th><th>销量</th><th>系数</th><th>仓库需求</th></tr></thead><tbody>${destinations.map((d) => `<tr><td>${esc(shopName(d.shop))}<div class="row-sub">${esc(d.warehouse_sku)}</div></td><td>${num(d.units)}</td><td>${num(d.conversion_factor)}</td><td>${num(d.warehouse_units)}</td></tr>`).join("")}</tbody></table></div>`;
+  return html;
 }
 function openPlan(sku) {
   const r = state.data.rows.find((x) => x.sku === sku),
@@ -608,7 +616,7 @@ function openPlan(sku) {
         )
         .join(
           "",
-        )}</select></label><label class="field">分配方式<select name="mode"><option value="sales">按本次销量占比</option><option value="manual" ${p?.mode === "manual" ? "selected" : ""}>手动设置比例</option></select></label></div><div id="manualRatios" class="ratio-grid">${state.data.shops.map((s) => `<label class="field">${esc(s.name)} %<input type="number" min="0" max="100" step="0.01" data-weight="${esc(s.key)}" value="${p?.mode === "manual" ? p.weights[s.key] || 0 : r.shares[s.key] || 0}"></label>`).join("")}</div><div id="allocationPreview" class="allocation-preview"></div><p class="allocation-hint">各店分配合计等于采购数量；保存后保留当次比例。</p><label class="check-field"><input name="locked" type="checkbox" ${p?.locked !== false ? "checked" : ""}><span>锁定计划数量<small>锁定值不被重算覆盖；未锁定草稿可通过「重算未锁定」更新。</small></span></label><label class="field">采购备注<textarea name="note" maxlength="1000">${esc(p?.note || "")}</textarea></label></section><div id="planError" class="form-error"></div><section id="planHistory"></section></div><div class="drawer-footer"><button class="button" type="button" id="cancelPlan">取消</button><button class="button primary" type="submit">保存计划</button></div></form>`,
+        )}</select></label><label class="field">分配方式<select name="mode"><option value="sales">按仓库需求占比</option><option value="manual" ${p?.mode === "manual" ? "selected" : ""}>手动设置比例</option></select></label></div><div id="manualRatios" class="ratio-grid">${state.data.shops.map((s) => `<label class="field">${esc(s.name)} %<input type="number" min="0" max="100" step="0.01" data-weight="${esc(s.key)}" value="${p?.mode === "manual" ? p.weights[s.key] || 0 : r.warehouse_shares[s.key] || 0}"></label>`).join("")}</div><div id="allocationPreview" class="allocation-preview"></div><p class="allocation-hint">各店分配合计等于采购数量；保存后保留当次比例。</p><label class="check-field"><input name="locked" type="checkbox" ${p?.locked !== false ? "checked" : ""}><span>锁定计划数量<small>锁定值不被重算覆盖；未锁定草稿可通过「重算未锁定」更新。</small></span></label><label class="field">采购备注<textarea name="note" maxlength="1000">${esc(p?.note || "")}</textarea></label></section><div id="planError" class="form-error"></div><section id="planHistory"></section></div><div class="drawer-footer"><button class="button" type="button" id="cancelPlan">取消</button><button class="button primary" type="submit">保存计划</button></div></form>`,
   );
   const f = $("planForm");
   function preview() {
@@ -621,7 +629,7 @@ function openPlan(sku) {
               Number(i.value),
             ]),
           )
-        : r.sales;
+        : r.warehouse_sales;
     const total = Object.values(weights).reduce((a, b) => a + b, 0);
     const exact = state.data.shops.map((s) =>
         total ? (qty * (weights[s.key] || 0)) / total : 0,

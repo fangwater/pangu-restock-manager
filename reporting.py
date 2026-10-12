@@ -101,6 +101,7 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
     sales = snapshots.get('sales', {}).get('data', {})
     inventory = snapshots.get('inventory', {}).get('data', [])
     snapshot_version = sales.get('version', 1 if any('platform_units' in p for p in sales.get('points', [])) else 2)
+    identity_complete = snapshot_version >= 3
     shop_info = {k: {'key': k, 'name': v} for k, v in SHOP_LABELS.items()}
     for s in sales.get('shops', []):
         shop_info[s['key']] = s
@@ -130,7 +131,8 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
                           'category': product['category'], 'color': product['color'], 'spec': product['spec'],
                           'sales': dict.fromkeys(all_shops, 0), 'warehouse_sales': dict.fromkeys(all_shops, 0),
                           'prior_sales': dict.fromkeys(all_shops, 0), 'available': None, 'in_transit': None,
-                          'warehouses': {}, 'regions': {}, 'has_inventory': False}
+                          'warehouses': {}, 'regions': {}, 'has_inventory': False,
+                          'demand_sources': {}, 'sales_destinations': {}}
         return items[sku]
 
     for p in sales.get('points', []):
@@ -138,11 +140,24 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
             continue
         when = date.fromisoformat(p['date'])
         if previous <= when <= end:
-            row = item(p['sku'], p.get('name', ''), p.get('variant', ''))
+            sales_sku = p['sales_sku'] if identity_complete else p['sku']
+            row = item(sales_sku, p.get('name', ''), p.get('variant', ''))
             if when >= start:
                 order_units = p.get('platform_units', p['units']) if snapshot_version < 2 else p['units']
                 row['sales'][p['shop']] += order_units
-                row['warehouse_sales'][p['shop']] += p.get('warehouse_units', p['units'])
+                demand = item(p['sku'], p.get('name', '') if p['sku'] == sales_sku else '')
+                warehouse_units = p.get('warehouse_units', p['units'])
+                demand['warehouse_sales'][p['shop']] += warehouse_units
+                factor = p.get('conversion_factor', warehouse_units / order_units if order_units else 1)
+                key = (p['shop'], sales_sku, factor)
+                source = demand['demand_sources'].setdefault(key, {'shop': p['shop'], 'sales_sku': sales_sku,
+                    'warehouse_sku': p['sku'], 'conversion_factor': factor, 'units': 0, 'warehouse_units': 0})
+                source['units'] += order_units
+                source['warehouse_units'] += warehouse_units
+                destination = row['sales_destinations'].setdefault((p['shop'], p['sku'], factor),
+                    {'shop': p['shop'], 'warehouse_sku': p['sku'], 'conversion_factor': factor, 'units': 0, 'warehouse_units': 0})
+                destination['units'] += order_units
+                destination['warehouse_units'] += warehouse_units
                 if category == 'all' or row['category'] == category:
                     series[str(when)][p['shop']] += order_units
                 if p.get('region'):
@@ -183,6 +198,9 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
     for row in items.values():
         total, prior = row['total'], row['prior_total']
         row['shares'] = percentage_parts(row['sales'])
+        row['warehouse_shares'] = percentage_parts(row['warehouse_sales'])
+        row['demand_sources'] = [v for _, v in sorted(row['demand_sources'].items())]
+        row['sales_destinations'] = [v for _, v in sorted(row['sales_destinations'].items())]
         row['daily_rate'] = total / days
         row['warehouse_daily_rate'] = row['warehouse_total'] / days
         row['category_share'] = sku_category_shares[row['sku']]
@@ -193,13 +211,15 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
         rule = resolve_rule(settings, rules, row['product'], selected_shops)
         stock = row['available']
         row['coverage'] = stock / row['warehouse_daily_rate'] if stock is not None and row['warehouse_daily_rate'] else None
-        row['stock_status'] = 'unknown' if stock is None else ('out' if total and stock <= 0 else 'low' if row['coverage'] is not None and row['coverage'] < rule['target_days'] * rule['safety_factor'] else 'normal' if total else 'inactive')
+        row['stock_status'] = 'unknown' if stock is None else ('out' if row['warehouse_total'] and stock <= 0 else 'low' if row['coverage'] is not None and row['coverage'] < rule['target_days'] * rule['safety_factor'] else 'normal' if row['warehouse_total'] else 'inactive')
         incoming = row['in_transit'] if rule['include_in_transit'] and row['in_transit'] is not None else 0
         target = row['warehouse_daily_rate'] * rule['target_days'] * (1 + rule['safety_factor'])
         raw = max(0, target - (stock or 0) - incoming)
         row['suggested'] = None
         row['suggestion_reason'] = ''
-        if not window_complete:
+        if not identity_complete:
+            row['suggestion_reason'] = '旧销量快照未区分销售 SKU 与仓库 SKU，等待同步'
+        elif not window_complete:
             row['suggestion_reason'] = '所选日期超出已同步的销量覆盖范围'
         elif sales_stale or inventory_stale:
             row['suggestion_reason'] = '销量或库存尚未同步，或快照超过 30 分钟'
@@ -207,9 +227,12 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
             row['suggestion_reason'] = '缺少对应仓库 SKU 库存记录，请核对产品映射'
         else:
             row['suggested'] = math.ceil(round(raw / rule['box_size'], 10)) * rule['box_size']
-        row['basis'] = {**rule, 'window_days': days, 'order_sales': total, 'warehouse_sales': row['warehouse_total'],
+        row['basis'] = {**rule, 'version': 3 if identity_complete else snapshot_version,
+                        'demand_sources': row['demand_sources'], 'sales_destinations': row['sales_destinations'],
+                        'warehouse_sales_by_shop': row['warehouse_sales'],
+                        'window_days': days, 'order_sales': total, 'warehouse_sales': row['warehouse_total'],
                         'order_daily_rate': row['daily_rate'], 'daily_rate': row['warehouse_daily_rate'],
-                        'conversion_ratio': row['warehouse_total'] / total if total else 1,
+                        'conversion_ratio': None if identity_complete else row['warehouse_total'] / total if total else 1,
                         'available': stock, 'in_transit_deducted': incoming, 'target_quantity': target,
                         'raw_quantity': raw if stock is not None else None, 'suggested': row['suggested'],
                         'quantity_unit': '仓库 SKU 单位', 'calculated_at': timestamp, 'filters': filters}
@@ -219,6 +242,8 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
     totals = {k: sum(r['sales'][k] for r in rows) for k in all_shops}
     planned = [r for r in rows if r['plan'] and r['plan']['status'] != 'completed']
     warnings = []
+    if sales_ready and not identity_complete:
+        warnings.append('旧销量快照未区分销售 SKU 与仓库 SKU，备货建议暂停，等待同步')
     if sales_stale:
         warnings.append('销量尚未同步或超过 30 分钟，备货建议暂停计算')
     if inventory_stale:
@@ -238,7 +263,7 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
             'summary': {'total': sum(totals.values()), 'global_total': global_total, 'shops': totals, 'shares': percentage_parts(totals),
                         'active_skus': sum(r['total'] > 0 for r in rows), 'sku_count': len(rows),
                         'urgent_skus': sum(r['stock_status'] in ('out', 'low') for r in rows),
-                        'suggested': sum(r['suggested'] or 0 for r in rows) if window_complete and not sales_stale and not inventory_stale else None,
+                        'suggested': sum(r['suggested'] or 0 for r in rows) if identity_complete and window_complete and not sales_stale and not inventory_stale else None,
                         'planned': sum(r['plan']['quantity'] for r in planned), 'locked': sum(bool(r['plan'].get('locked')) for r in planned),
                         'planned_shops': {k: sum(r['allocation'][k] for r in planned) for k in all_shops},
                         'unclassified': sum(r['category'] == 'uncategorized' and r['total'] > 0 for r in items.values())},
@@ -247,4 +272,4 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
             'unmapped_mappings': sales.get('unmapped_mappings', 0), 'orders_without_lines': missing},
             'ready': sales_ready, 'inventory_ready': inventory_ready, 'history_complete': history_complete,
             'window_complete': window_complete, 'snapshots': {k: v['fetched_at'] for k, v in snapshots.items()},
-            'generated_at': timestamp, 'unit_basis': '订单 quantity；采购量使用仓库 SKU 单位'}
+            'generated_at': timestamp, 'unit_basis': '销售 SKU 订单 quantity；仓库需求按映射及换算系数单独汇总'}

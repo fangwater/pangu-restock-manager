@@ -314,7 +314,7 @@ class Manager:
             factor = p.get('conversion_factor')
             if not isinstance(factor, (int, float)) or not math.isfinite(factor) or factor <= 0 or not math.isclose(p['units'] * factor, p['warehouse_units'], rel_tol=1e-8, abs_tol=1e-4):
                 raise ValueError('销量快照换算数量不一致')
-        return data, {'rows': len(data['points']), 'generated_at': data['generated_at'], 'sources': data['sources']}
+        return data, {'rows': len(data['points']), 'generated_at': data['generated_at'], 'sources': data['sources'], 'sync': data.get('sync')}
 
     def inventory(self):
         records = []

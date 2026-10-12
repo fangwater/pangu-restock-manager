@@ -177,6 +177,11 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
     sales_stale = not sales_ready or (current - datetime.fromisoformat(snapshots['sales']['fetched_at'])).total_seconds() > 1800
     inventory_stale = not inventory_ready or (current - datetime.fromisoformat(snapshots['inventory']['fetched_at'])).total_seconds() > 1800
     source_warnings = []
+    erp_sync = sales.get('sync') or {}
+    if erp_sync.get('status') == 'failed':
+        source_warnings.append('销售中台订单同步失败，等待自动重试')
+    elif erp_sync and (not erp_sync.get('last_success_at') or (current - datetime.fromisoformat(erp_sync['last_success_at'].replace('Z', '+00:00'))).total_seconds() > 1800):
+        source_warnings.append('销售中台最近成功同步超过 30 分钟')
     for source in sources:
         shop = source['source']
         if shop not in ('home', 'buy') or shop not in selected_shops:

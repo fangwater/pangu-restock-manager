@@ -43,6 +43,17 @@ class DecisionTests(unittest.TestCase):
         self.store.source('home', details={'sales_sync': {**healthy, 'watermark': '2020-01-01T00:00:00Z'}})
         self.assertIn('超过 30 分钟', self.row()['suggestion_reason'])
 
+    def test_erp_sync_failure_is_not_hidden_by_fresh_snapshot(self):
+        snapshots = self.store.read()[0]
+        data = snapshots['sales']['data']
+        data['sync'] = {'status': 'failed', 'last_success_at': app.now()}
+        self.store.source('sales', data=data)
+        self.assertIsNone(self.row()['suggested'])
+        self.assertIn('销售中台订单同步失败', self.row()['suggestion_reason'])
+        data['sync']['status'] = 'succeeded'
+        self.store.source('sales', data=data)
+        self.assertIsNotNone(self.row()['suggested'])
+
     def test_dates_quarters_and_inclusive_filters(self):
         self.assertEqual(date_window({'preset':'previous_quarter'}, date(2026,10,11)), (date(2026,7,1),date(2026,9,30)))
         self.assertEqual(date_window({'preset':'current_quarter'}, date(2026,10,11)), (date(2026,10,1),date(2026,10,11)))

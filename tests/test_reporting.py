@@ -30,6 +30,19 @@ class DecisionTests(unittest.TestCase):
         self.tmp.cleanup()
     def row(self, sku='PH+H-20Pcs-Black', **query):
         return next(r for r in self.manager.dashboard(query)['rows'] if r['sku']==sku)
+    def test_sales_sync_health_pauses_and_recovers_suggestions(self):
+        self.store.source('home', details={'sales_sync': {'watermark': app.now()}})
+        self.assertIsNone(self.row()['suggested'])
+        self.assertIn('历史订单回补未完成', self.row()['suggestion_reason'])
+        healthy = {'watermark': app.now(), 'last_reconciled_at': app.now(), 'last_error': ''}
+        self.store.source('home', details={'sales_sync': healthy})
+        self.assertIsNotNone(self.row()['suggested'])
+        self.store.source('home', details={'sales_sync': {**healthy, 'last_error': 'upstream timeout'}})
+        self.assertIsNone(self.row()['suggested'])
+        self.assertIsNotNone(self.row('PH+H-10Pcs-White', shops='buy')['suggested'])
+        self.store.source('home', details={'sales_sync': {**healthy, 'watermark': '2020-01-01T00:00:00Z'}})
+        self.assertIn('超过 30 分钟', self.row()['suggestion_reason'])
+
     def test_dates_quarters_and_inclusive_filters(self):
         self.assertEqual(date_window({'preset':'previous_quarter'}, date(2026,10,11)), (date(2026,7,1),date(2026,9,30)))
         self.assertEqual(date_window({'preset':'current_quarter'}, date(2026,10,11)), (date(2026,10,1),date(2026,10,11)))

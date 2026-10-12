@@ -176,6 +176,21 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
     current = datetime.fromisoformat(timestamp)
     sales_stale = not sales_ready or (current - datetime.fromisoformat(snapshots['sales']['fetched_at'])).total_seconds() > 1800
     inventory_stale = not inventory_ready or (current - datetime.fromisoformat(snapshots['inventory']['fetched_at'])).total_seconds() > 1800
+    source_warnings = []
+    for source in sources:
+        shop = source['source']
+        if shop not in ('home', 'buy') or shop not in selected_shops:
+            continue
+        sync = source.get('details', {}).get('sales_sync') or {}
+        label = shop_info[shop]['name']
+        if source.get('status') != 'ok':
+            source_warnings.append(f'{label} 销量同步状态读取失败')
+        elif sync.get('last_error'):
+            source_warnings.append(f'{label} 订单同步失败，等待自动重试')
+        elif not sync.get('last_reconciled_at'):
+            source_warnings.append(f'{label} 历史订单回补未完成')
+        elif not sync.get('watermark') or (current - datetime.fromisoformat(sync['watermark'].replace('Z', '+00:00'))).total_seconds() > 1800:
+            source_warnings.append(f'{label} 订单同步进度超过 30 分钟')
     history_complete = bool(sales.get('start') and sales['start'] <= str(previous))
     window_complete = bool(sales.get('start') and sales['start'] <= str(start) and sales.get('end', str(today)) >= str(end))
     category_totals = dict.fromkeys(category_names, 0)
@@ -223,6 +238,8 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
             row['suggestion_reason'] = '所选日期超出已同步的销量覆盖范围'
         elif sales_stale or inventory_stale:
             row['suggestion_reason'] = '销量或库存尚未同步，或快照超过 30 分钟'
+        elif source_warnings:
+            row['suggestion_reason'] = '；'.join(source_warnings)
         elif not row['has_inventory']:
             row['suggestion_reason'] = '缺少对应仓库 SKU 库存记录，请核对产品映射'
         else:
@@ -241,7 +258,7 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
     rows = sorted((r for r in items.values() if category == 'all' or r['category'] == category), key=lambda r: (-r['total'], r['sku']))
     totals = {k: sum(r['sales'][k] for r in rows) for k in all_shops}
     planned = [r for r in rows if r['plan'] and r['plan']['status'] != 'completed']
-    warnings = []
+    warnings = list(source_warnings)
     if sales_ready and not identity_complete:
         warnings.append('旧销量快照未区分销售 SKU 与仓库 SKU，备货建议暂停，等待同步')
     if sales_stale:
@@ -263,7 +280,7 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
             'summary': {'total': sum(totals.values()), 'global_total': global_total, 'shops': totals, 'shares': percentage_parts(totals),
                         'active_skus': sum(r['total'] > 0 for r in rows), 'sku_count': len(rows),
                         'urgent_skus': sum(r['stock_status'] in ('out', 'low') for r in rows),
-                        'suggested': sum(r['suggested'] or 0 for r in rows) if identity_complete and window_complete and not sales_stale and not inventory_stale else None,
+                        'suggested': sum(r['suggested'] or 0 for r in rows) if identity_complete and window_complete and not sales_stale and not inventory_stale and not source_warnings else None,
                         'planned': sum(r['plan']['quantity'] for r in planned), 'locked': sum(bool(r['plan'].get('locked')) for r in planned),
                         'planned_shops': {k: sum(r['allocation'][k] for r in planned) for k in all_shops},
                         'unclassified': sum(r['category'] == 'uncategorized' and r['total'] > 0 for r in items.values())},

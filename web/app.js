@@ -840,6 +840,10 @@ function renderRules() {
         }),
     );
 }
+function salesSyncCell(sync) {
+  const status = sync.last_error ? "同步失败，自动重试" : !sync.last_reconciled_at ? "历史回补中" : "已同步";
+  return `<span class="badge ${sync.last_error || !sync.last_reconciled_at ? "warn" : "ok"}">${status}</span><div class="row-sub">订单更新至 ${esc(formatTime(sync.watermark))}</div><div class="row-sub">最近全量复查 ${esc(formatTime(sync.last_reconciled_at))}</div>${!sync.last_reconciled_at && sync.reconcile_before ? `<div class="row-sub">历史回补至 ${esc(formatTime(sync.reconcile_before))}</div>` : ""}`;
+}
 function renderSources() {
   const names = {
     sales: "ERP 销量中台",
@@ -849,7 +853,7 @@ function renderSources() {
     shein: "Shein",
   };
   $("sourcesPage").innerHTML =
-    `<section class="panel sku-panel"><div class="sku-panel-heading"><h2>数据源</h2><span class="panel-meta">${state.data.sources.length} 个连接</span></div><div class="table-scroll"><table><thead><tr><th>数据源</th><th>状态</th><th>最近成功</th><th>最近检查</th><th>数据量</th></tr></thead><tbody>${state.data.sources.map((s) => `<tr><td><strong>${esc(names[s.source] || s.source)}</strong></td><td><span class="badge ${s.status === "ok" ? "ok" : "warn"}">${s.status === "ok" ? "连接正常" : "拉取失败"}</span>${s.error ? `<div class="row-sub">${esc(s.error)}</div>` : ""}</td><td>${esc(formatTime(s.success_at))}</td><td>${esc(formatTime(s.checked_at))}</td><td>${s.details.rows != null ? `${num(s.details.rows)} 条聚合` : s.details.skus != null ? `${num(s.details.skus)} 个 SKU` : "—"}</td></tr>`).join("")}</tbody></table></div></section><article class="panel source-explanation"><h2>数据与口径</h2><p>销量以订单商品件数求和，取消与退款订单剔除；库存与采购建议以仓库 SKU 单位计算。</p><p>部分历史 Temu 订单无平台下单时间，沿用中台首次采集日期。</p><p>同步失败保留成功快照；超过 30 分钟、所选日期不完整或 SKU 缺少库存映射时暂停相应建议。</p></article>`;
+    `<section class="panel sku-panel"><div class="sku-panel-heading"><h2>数据源</h2><span class="panel-meta">${state.data.sources.length} 个连接</span></div><div class="table-scroll"><table><thead><tr><th>数据源</th><th>状态</th><th>最近成功</th><th>最近检查</th><th>数据量 / 订单同步</th></tr></thead><tbody>${state.data.sources.map((s) => `<tr><td><strong>${esc(names[s.source] || s.source)}</strong></td><td><span class="badge ${s.status === "ok" ? "ok" : "warn"}">${s.status === "ok" ? "连接正常" : "拉取失败"}</span>${s.error ? `<div class="row-sub">${esc(s.error)}</div>` : ""}</td><td>${esc(formatTime(s.success_at))}</td><td>${esc(formatTime(s.checked_at))}</td><td>${s.details.sales_sync ? salesSyncCell(s.details.sales_sync) : s.details.rows != null ? `${num(s.details.rows)} 条聚合` : s.details.skus != null ? `${num(s.details.skus)} 个 SKU` : "—"}</td></tr>`).join("")}</tbody></table></div></section><article class="panel source-explanation"><h2>数据与口径</h2><p>销量以订单商品件数求和，取消与退款订单剔除；库存与采购建议以仓库 SKU 单位计算。</p><p>Temu 销量按平台下单时间统计；同步包含全部订单状态，每日复查近 90 天订单。</p><p>同步失败自动重试并保留成功快照；首次回补未完成、订单同步或快照超过 30 分钟、所选日期不完整或缺少库存映射时暂停相应建议。</p></article>`;
 }
 async function downloadExcel(kind) {
   const button = kind === "purchase" ? $("purchaseExport") : $("exportButton");

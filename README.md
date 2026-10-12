@@ -80,3 +80,14 @@ HK Nginx `/pangu-restock/` → 本地 18110；pangutech HTTPS 入口 → HK Ngin
 ### 销售与仓库需求口径
 
 Temu 销售 SKU 使用原始 `ext_code`；Shein 的 1:1 平台 SKU 别名使用现有标准商品映射，非 1:1 映射保留平台销售身份。采购建议、库存覆盖与自动店铺分配使用仓库换算需求。页面详情和 Excel「仓库需求明细」逐项记录来源 SKU、店铺、订单数量、换算系数及换算需求。既有锁定计划保留原始数量、分配权重和计算依据。旧版本快照等待同步版本 3，期间暂停自动建议。
+
+### 订单 Excel 验收
+
+`scripts/verify_order_excel.py` 只读比对平台导出的订单 Excel 与中台明细 CSV，按「订单号 + 销售 SKU」合并重复行，生成汇总、逐单核验和差异明细。Excel 不作为同步数据源。校验脚本依赖 `openpyxl`，不属于生产服务依赖。
+
+```sh
+python scripts/verify_order_excel.py --excel orders.xlsx --orders-csv erp.csv \
+  --start 2026-09-12 --end 2026-10-11 --output verification.xlsx
+```
+
+CSV 必需字段见脚本说明；`statistic_time` 必须先转换为业务时区。实时取消或退款可能使系统数量与较早导出的 Excel 不同，差异必须核实，不能按 Excel 覆盖平台状态。

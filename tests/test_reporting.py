@@ -54,6 +54,25 @@ class DecisionTests(unittest.TestCase):
         self.store.source('sales', data=data)
         self.assertIsNotNone(self.row()['suggested'])
 
+    def test_shein_backfill_and_stale_upstream_pause_only_selected_shops(self):
+        self.store.source('shein', details={'sync': {'status': 'succeeded'}})
+        self.assertIn('Shein 历史订单回补未完成', self.row()['suggestion_reason'])
+        self.assertIsNotNone(self.row(shops='home')['suggested'])
+        healthy = {'watermark': app.now(), 'last_reconciled_at': app.now(), 'history_start': '2024-01-01T00:00:00+08:00'}
+        self.store.source('shein', details={'sales_sync': healthy})
+        self.assertIsNotNone(self.row()['suggested'])
+        self.store.source('shein', details={'sales_sync': {**healthy, 'watermark': '2020-01-01T00:00:00Z'}})
+        self.assertIn('Shein 订单同步进度超过 30 分钟', self.row()['suggestion_reason'])
+        self.store.source('shein', details={'sales_sync': {**healthy, 'last_error': 'operation failed'}})
+        self.assertIn('Shein 订单同步失败', self.row()['suggestion_reason'])
+
+    def test_shein_metadata_uses_persisted_sales_sync_progress(self):
+        from unittest.mock import patch
+        state = {'watermark': app.now(), 'last_reconciled_at': app.now()}
+        with patch.object(self.manager, 'get', return_value={'success': True, 'data': state}) as get:
+            self.assertEqual(self.manager.source_meta('shein'), (None, {'sales_sync': state}))
+            self.assertIn('/sales-sync/status?shop_key=beauty-hangers-home', get.call_args.args[0])
+
     def test_dates_quarters_and_inclusive_filters(self):
         self.assertEqual(date_window({'preset':'previous_quarter'}, date(2026,10,11)), (date(2026,7,1),date(2026,9,30)))
         self.assertEqual(date_window({'preset':'current_quarter'}, date(2026,10,11)), (date(2026,10,1),date(2026,10,11)))

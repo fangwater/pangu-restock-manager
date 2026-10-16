@@ -339,16 +339,15 @@ class Manager:
 
     def source_meta(self, shop):
         if shop == 'shein':
-            url = self.shein_url + '/orders?shop_key=beauty-hangers-home&page=1&page_size=1'
+            url = self.shein_url + '/sales-sync/status?shop_key=beauty-hangers-home'
             headers = {}
         else:
             headers = {'X-Temu-Shop': 'panda-homes' if shop == 'home' else 'panda-buy'}
-            state = self.get(self.temu_url + '/sales-sync/status', headers=headers).get('data')
-            if not isinstance(state, dict):
-                raise ValueError('缺少销量同步状态')
-            return None, {'sales_sync': state}
-        meta = self.get(url, headers=headers).get('meta', {})
-        return None, {'sync': meta.get('sync'), 'open_orders': meta.get('total')}
+            url = self.temu_url + '/sales-sync/status'
+        state = self.get(url, headers=headers).get('data')
+        if not isinstance(state, dict):
+            raise ValueError('缺少销量同步状态')
+        return None, {'sales_sync': state}
 
     def sync(self):
         if not self.lock.acquire(blocking=False):

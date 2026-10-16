@@ -184,7 +184,7 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
         source_warnings.append('销售中台最近成功同步超过 30 分钟')
     for source in sources:
         shop = source['source']
-        if shop not in ('home', 'buy') or shop not in selected_shops:
+        if shop not in ('home', 'buy', 'shein') or shop not in selected_shops:
             continue
         sync = source.get('details', {}).get('sales_sync') or {}
         label = shop_info[shop]['name']
@@ -196,6 +196,8 @@ def compute_report(snapshots, plans, settings, sources, catalog, categories, rul
             source_warnings.append(f'{label} 历史订单回补未完成')
         elif not sync.get('watermark') or (current - datetime.fromisoformat(sync['watermark'].replace('Z', '+00:00'))).total_seconds() > 1800:
             source_warnings.append(f'{label} 订单同步进度超过 30 分钟')
+        elif sync.get('history_start') and sync['history_start'][:10] > str(start):
+            source_warnings.append(f'{label} 所选日期早于已核验的历史订单范围')
     history_complete = bool(sales.get('start') and sales['start'] <= str(previous))
     window_complete = bool(sales.get('start') and sales['start'] <= str(start) and sales.get('end', str(today)) >= str(end))
     category_totals = dict.fromkeys(category_names, 0)

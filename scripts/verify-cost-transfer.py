@@ -33,6 +33,8 @@ def verify(source, actual):
                 fields += 1
                 result = found.get(key)
                 equal = result == value
+                if key == 'currency' and value == 'RMB' and result == 'CNY':
+                    equal = True
                 if key in numeric and value is not None and result is not None:
                     equal = Decimal(str(result)) == Decimal(str(value))
                 if not equal:

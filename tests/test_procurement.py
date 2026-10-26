@@ -1,9 +1,10 @@
 import copy
+import json
 import tempfile
 import unittest
 from pathlib import Path
 from app import Store
-from procurement import CostStore, CostError
+from procurement import CostStore, CostError, dumps
 
 
 def fixture():
@@ -35,7 +36,7 @@ class ProcurementTests(unittest.TestCase):
     def test_transfer_preserves_ids_amount_precision_nulls_and_currency_separation(self):
         self.costs.import_legacy(fixture())
         snapshot = self.costs.snapshot(full=True)
-        self.assertEqual(snapshot['summary']['fee_totals'], {'RMB': '2000.25', 'USD': '200.02'})
+        self.assertEqual(snapshot['summary']['fee_totals'], {'CNY': '2000.25', 'USD': '200.02'})
         self.assertEqual(snapshot['summary']['without_fees'], 1)
         detail = self.costs.detail(61)
         self.assertEqual(detail['lines'][0]['id'], 100)
@@ -61,6 +62,26 @@ class ProcurementTests(unittest.TestCase):
         self.assertEqual(self.costs.detail(61)['note'], '备货系统后续修改')
         with self.assertRaises(CostError):
             self.costs.import_legacy(broken)
+
+    def test_existing_rmb_normalization_is_once_only_and_preserves_amounts_and_source_archive(self):
+        self.costs.import_legacy(fixture())
+        with self.store.connection() as db:
+            archive = db.execute('SELECT source_payload FROM cost_migrations').fetchone()[0]
+            db.execute('DELETE FROM cost_data_migrations')
+            for table in ('cost_templates', 'cost_tickets'):
+                for row in list(db.execute('SELECT id,payload FROM ' + table)):
+                    payload = json.loads(row['payload'])
+                    for entry in payload.get('categories', []) + payload.get('costs', []):
+                        if entry.get('currency') == 'CNY':
+                            entry['currency'] = 'RMB'
+                    db.execute('UPDATE ' + table + ' SET payload=? WHERE id=?', (dumps(payload), row['id']))
+        migrated = CostStore(self.store)
+        first = migrated.detail(61)
+        self.assertEqual(first['fee_totals'], {'CNY': '2000.25', 'USD': '200.02'})
+        self.assertEqual(first['purchase_currency'], '')
+        self.assertEqual(CostStore(self.store).detail(61)['version'], first['version'])
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT source_payload FROM cost_migrations').fetchone()[0], archive)
 
     def test_purchase_and_quantity_fee_arithmetic_versions_and_missing_values(self):
         self.costs.import_legacy(fixture())

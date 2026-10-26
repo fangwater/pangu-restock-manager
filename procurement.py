@@ -1,12 +1,13 @@
 """Purchase batches and configurable freight costs owned by the restock service."""
 import hashlib
 import json
-import re
 import sqlite3
 import uuid
 from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
+
+CURRENCIES = ('CNY', 'USD', 'EUR', 'HKD')
 
 
 class CostError(Exception):
@@ -49,8 +50,10 @@ def number(value, label, nonnegative=False):
 
 def currency(value, required=False):
     value = text(value, '币种', required, 8).upper()
-    if value and not re.fullmatch(r'[A-Z]{3,8}', value):
-        raise CostError('币种须为 3–8 位英文字母')
+    if value == 'RMB':
+        value = 'CNY'
+    if value and value not in CURRENCIES:
+        raise CostError('币种须选择 CNY、USD、EUR 或 HKD')
     return value
 
 
@@ -82,7 +85,28 @@ class CostStore:
               entity_id INTEGER NOT NULL,action TEXT NOT NULL,before_json TEXT,after_json TEXT,created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cost_migrations(source TEXT PRIMARY KEY,sha256 TEXT NOT NULL,
               imported_at TEXT NOT NULL,counts TEXT NOT NULL,source_payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS cost_data_migrations(name TEXT PRIMARY KEY,applied_at TEXT NOT NULL);
             ''')
+            db.execute('BEGIN IMMEDIATE')
+            if not db.execute("SELECT 1 FROM cost_data_migrations WHERE name='currency-cny-v1'").fetchone():
+                for table, entity in [('cost_templates', 'template'), ('cost_tickets', 'ticket')]:
+                    for row in list(db.execute(f'SELECT * FROM {table}')):
+                        before = json.loads(row['payload'])
+                        after = json.loads(row['payload'])
+                        if entity == 'template':
+                            for category in after.get('categories', []):
+                                if str(category.get('currency', '')).strip().upper() == 'RMB':
+                                    category['currency'] = 'CNY'
+                        else:
+                            if str(after.get('purchase_currency', '')).strip().upper() == 'RMB':
+                                after['purchase_currency'] = 'CNY'
+                            for fee in after.get('costs', []):
+                                if str(fee.get('currency', '')).strip().upper() == 'RMB':
+                                    fee['currency'] = 'CNY'
+                        if before != after:
+                            db.execute(f'UPDATE {table} SET payload=?,version=version+1 WHERE id=?', (dumps(after), row['id']))
+                            self.audit(db, entity, row['id'], 'normalize_currency', before, after)
+                db.execute('INSERT INTO cost_data_migrations VALUES(?,?)', ('currency-cny-v1', timestamp()))
 
     @staticmethod
     def item(row):
@@ -157,6 +181,7 @@ class CostStore:
         if not full:
             tickets = [{k: v for k, v in t.items() if k not in ('lines', 'costs')} for t in tickets]
         return {'version': 1, 'owner': 'pangu-restock-manager', 'generated_at': timestamp(), 'summary': summary,
+                'currencies': list(CURRENCIES),
                 'templates': templates, 'tickets': sorted(tickets, key=lambda t: t['updated_at'], reverse=True),
                 'migration': {**dict(migration), 'counts': json.loads(migration['counts'])} if migration else None}
 
@@ -374,7 +399,7 @@ class CostStore:
             if any(r['inventory_ticket_id'] not in ticket_ids for r in [*source['lines'], *source['costs']]):
                 raise CostError('旧系统库存单关联不完整')
             for template in source['templates']:
-                nested = [{**c, 'types': [k for k in source['types'] if k['category_id'] == c['id']]}
+                nested = [{**c, 'currency': currency(c['currency'], True), 'types': [k for k in source['types'] if k['category_id'] == c['id']]}
                           for c in source['categories'] if c['template_id'] == template['id']]
                 payload = {**template, 'categories': nested, 'source_shop_key': template.get('shop_key', '')}
                 db.execute('INSERT INTO cost_templates(id,name,payload,version,created_at,updated_at) VALUES(?,?,?,1,?,?)',
@@ -398,7 +423,7 @@ class CostStore:
                         raise CostError('旧系统费用模板关联无效')
                     category = categories[kind['category_id']]
                     costs.append({**entry, 'category_id': category['id'], 'category_name': category['name'],
-                                  'cost_type_name': kind['name'], 'calculation_mode': kind['calculation_mode'], 'currency': category['currency'],
+                                  'cost_type_name': kind['name'], 'calculation_mode': kind['calculation_mode'], 'currency': currency(category['currency'], True),
                                   **{field: number(entry.get(field), field) for field in ('quantity', 'unit_price', 'amount')}})
                 payload = {**ticket, 'source_shop_key': ticket.get('shop_key', ''), 'purchase_currency': '',
                            'effective_date': None, 'lines': lines, 'costs': costs}

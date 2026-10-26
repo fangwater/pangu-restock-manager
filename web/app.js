@@ -31,7 +31,7 @@ const statuses = {
 };
 const state = {
   data: null,
-  view: "overview",
+  view: ["overview", "plans", "catalog", "classification", "rules", "sources", "costs", "cost-templates"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "overview",
   query: { preset: "last30" },
   page: 1,
   size: 20,
@@ -161,6 +161,16 @@ function dropdownLabels() {
         : `${status.length}个状态`;
 }
 function render() {
+  const url = new URL(location.href);
+  url.searchParams.set("view", state.view);
+  history.replaceState({}, "", url);
+  if (["costs", "cost-templates"].includes(state.view)) {
+    renderCostWorkspace();
+    return;
+  }
+  $("costsPage").hidden = true;
+  document.querySelector(".page-actions").hidden = false;
+  document.querySelector(".page-footer").hidden = false;
   const d = state.data;
   if (!d) return;
   syncControls();
@@ -1245,4 +1255,5 @@ setInterval(async () => {
   } catch {}
 }, 5000);
 icons();
+if (["costs", "cost-templates"].includes(state.view)) render();
 load();

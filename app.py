@@ -21,6 +21,7 @@ from urllib.request import Request, urlopen
 from zoneinfo import ZoneInfo
 from reporting import DEFAULT_RULE, compute_report, infer_product
 from excel_export import ExportQueue, MIME
+from procurement import CostStore, CostError
 
 ROOT = Path(__file__).resolve().parent
 SHOPS = ('home', 'buy', 'shein')
@@ -278,6 +279,7 @@ class Store:
 class Manager:
     def __init__(self, store):
         self.store = store
+        self.costs = CostStore(store)
         self.exports = ExportQueue(store, now)
         self.lock = threading.Lock()
         self.sync_state = {'running': False, 'started_at': None, 'completed_at': None}
@@ -557,6 +559,10 @@ class Handler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == '/api/health':
                 self.reply({'service': 'pangu-restock-manager', 'time': now()})
+            elif path in ('/api/costs', '/api/costs/export'):
+                self.reply(self.manager.costs.snapshot(full=path.endswith('/export')))
+            elif re.fullmatch(r'/api/costs/tickets/[1-9][0-9]*', path):
+                self.reply(self.manager.costs.detail(int(path.rsplit('/', 1)[1])))
             elif path == '/api/dashboard':
                 self.reply(self.manager.dashboard(self.query()))
             elif path == '/api/catalog':
@@ -599,12 +605,12 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith('/api/'):
                 raise APIError('接口不存在', 404)
             else:
-                files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/echarts.min.js': ('vendor/echarts.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
+                files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/costs.js': ('costs.js', 'application/javascript'), '/costs.css': ('costs.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/echarts.min.js': ('vendor/echarts.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
                 if path not in files:
                     raise APIError('页面不存在', 404)
                 filename, mime = files[path]
                 self.send_bytes((ROOT / 'web' / filename).read_bytes(), mime + '; charset=utf-8')
-        except APIError as e:
+        except (APIError, CostError) as e:
             self.reply(str(e), e.status)
         except (BrokenPipeError, ConnectionResetError):
             pass
@@ -622,7 +628,13 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self.body()
             path = urlparse(self.path).path
-            if path == '/api/sync' and self.command == 'POST':
+            if path == '/api/costs/tickets' and self.command == 'PUT':
+                self.reply(self.manager.costs.save_ticket(payload))
+            elif path == '/api/costs/templates' and self.command == 'PUT':
+                self.reply(self.manager.costs.save_template(payload))
+            elif path in ('/api/costs/tickets/remove', '/api/costs/templates/remove') and self.command == 'POST':
+                self.reply(self.manager.costs.remove('ticket' if '/tickets/' in path else 'template', payload))
+            elif path == '/api/sync' and self.command == 'POST':
                 started = self.manager.sync()
                 self.reply({'started': started, 'sync': self.manager.status()}, 202)
             elif path == '/api/plans' and self.command == 'PUT':
@@ -706,7 +718,7 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(settings)
             else:
                 raise APIError('接口不存在', 404)
-        except APIError as e:
+        except (APIError, CostError) as e:
             self.reply(str(e), e.status)
         except (BrokenPipeError, ConnectionResetError):
             pass

@@ -7,9 +7,11 @@
     <title>Pangu · 备货管理</title>
     <link rel="icon" href="favicon.svg" type="image/svg+xml" />
     <link rel="stylesheet" href="app.css?v=8" />
+    <link rel="stylesheet" href="costs.css?v=20261026-1" />
     <script defer src="vendor/lucide.min.js"></script>
     <script defer src="vendor/echarts.min.js"></script>
-    <script defer src="app.js?v=11"></script>
+    <script defer src="costs.js?v=20261026-1"></script>
+    <script defer src="app.js?v=20261026-1"></script>
   </head>
   <body>
     <aside class="sidebar" id="sidebar">
@@ -36,6 +38,12 @@
         </button>
         <button class="nav-item" data-view="catalog">
           <i data-lucide="tags"></i>产品资料
+        </button>
+        <button class="nav-item" data-view="costs">
+          <i data-lucide="receipt-text"></i>采购与物流成本
+        </button>
+        <button class="nav-item" data-view="cost-templates">
+          <i data-lucide="list-tree"></i>成本模板
         </button>
         <button class="nav-item" data-view="rules">
           <i data-lucide="sliders-horizontal"></i>备货规则
@@ -326,6 +334,7 @@
           </div>
         </section>
         <section id="sourcesPage" hidden></section>
+        <section id="costsPage" hidden></section>
         <footer class="page-footer">
           <span
             ><i data-lucide="database"></i
@@ -347,6 +356,7 @@
       hidden
     ></aside>
     <dialog id="settingsDialog"></dialog>
+    <dialog id="costDialog" aria-label="成本记录"></dialog>
     <div id="toast" class="toast" role="status" aria-live="polite" hidden></div>
   </body>
 </html>

@@ -41,3 +41,6 @@
 .fifo-digest { overflow-wrap:anywhere; }
 @media(max-width:1000px){.fifo-filters{grid-template-columns:repeat(2,minmax(0,1fr));}}
 @media(max-width:560px){.fifo-filters{grid-template-columns:minmax(0,1fr);}.fifo-config{align-items:stretch;flex-direction:column;}.fifo-check{white-space:normal;}}
+.acct-policy { padding:16px; margin-bottom:16px; align-items:end; }
+.acct-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
+.acct-tabs+.cost-toolbar { margin-top:16px; }

@@ -94,17 +94,23 @@ python scripts/verify_order_excel.py --excel orders.xlsx --orders-csv erp.csv \
 
 CSV 必需字段见脚本说明；`statistic_time` 必须先转换为业务时区。实时取消或退款可能使系统数量与较早导出的 Excel 不同，差异必须核实，不能按 Excel 覆盖平台状态。
 
-## FIFO 采购成本
+## FIFO 商品成本与核算配置
 
-入口 `?view=cost-fifo`。成本台账仍由备货系统管理，财务读取 `/api/profit/fifo`，财务订单数量源为 `/api/restock/cost-demands`。
+入口 `?view=cost-fifo`、`?view=cost-accounting`。采购和成本主数据由备货系统管理；财务读取成本与毛利计算结果。
 
-- 配置核算起始日，录入该日各仓库 SKU 的期初数量、原币采购总金额；无期初库存也须确认完整。新增、修改或删除期初会撤销完整性确认。
-- 入库记录关联采购单，支持多次、分仓、部分入库。累计数量不得超过采购数量；采购金额按采购行金额 / 采购数量计算，附加费用不并入。采购版本变化须重新核对，记录未填日期时保留草稿。
-- CSV 空模板在页面下载，同单号多行合并，完全相同的重复记录跳过；冲突或任一错误时整批回滚。金额允许空，空值不作为零。
-- 计算按仓库 + SKU、日期、稳定记录 ID 依次消耗。按平台订单时间（含待发货）测算，同日入库先于订单；使用仓库换算数量，全部平台和店铺自核算起始日重放后，再按展示起止日期、店铺、仓库、状态及订单 / SKU 过滤。不是实际出库记账，不做售后成本回冲。
-- Decimal 60 位运算，金额十位小数，部分入库和逐笔消耗用累计舍入差额保持守恒。CNY / USD / EUR / HKD 分开；未知金额、版本冲突、库存不足不计入完整成本汇总，缺口之后批次归属也保留待核对。不借用未来批次。
-- 批次明细列出来源、版本、数量及金额，计算输入和订单数量源附 SHA256；CSV 导出全部筛选行，界面每页 50 行。源订单不完整时不生成完整成本，源接口失败不以旧快照或零替代。
+- 核算起始日、完整期初确认、期初数量及采购 / 头程 / 物流原币金额分别维护。缺失金额不作为零；期初变更撤销确认。
+- 采购单支持多次、分仓、部分入库，累计数量不超过采购量。采购版本变化须重新核对。三项成本按采购单完整数量累计分配，保留十位小数差额守恒。
+- 费用类型归属和分摊规则可配置：申报金额（默认）、数量、采购金额、人工权重。完整性须逐采购单确认（含已核对的零费用）；缺少分类、金额、申报依据或确认时保留待核对。平台面单费在财务收支中计入，避免与采购台账重复。
+- 汇率支持 CNY / USD / EUR / HKD，使用业务日或此前最近生效报价，反向报价取倒数，不取未来报价；可选原入库日期或出库日期，记录报价版本和凭证。
+- FIFO 口径可选订单需求测算或实际出库。按仓库 + SKU 重放全部店铺、平台后再筛选；同日先入库、再出库、最后退款退回。同日退回于次日出库可用；不得用未来入库补过去缺口。
+- 实际退款商品行按店铺业务键去重，关联原出库及版本，累计数量不得超过原出库。可记录未退回、仅采购回冲或全部商品成本回冲；回冲使用原出库账面金额及汇率，保留明细。
+- 出库 / 退款数据覆盖按店铺、日期及凭证分别确认，零记录也须确认。仓储源缺少时区时不推定会计日期，不自动确认账期完整。
+- CSV 原子导入、业务键去重、版本冲突及变更历史适用于期初、入库和核算配置；错误整批回滚。报表 CSV 包含所有筛选行、三项成本、分摊、汇率和输入 SHA256。
 
-`GET /api/costs/fifo/inputs` 查询配置、记录和近期变更；`PUT /api/costs/fifo/settings`、`PUT /api/costs/fifo/records`、`POST /api/costs/fifo/records/remove`、`POST /api/costs/fifo/import` 沿用版本校验及同源写入保护。报告 `GET /api/costs/fifo`，导出 `/api/costs/fifo/export.csv`。所有报告为当前数据重算，未形成会计期间锁定或历史过账。
+API：`GET /api/costs/fifo/inputs`、`PUT /api/costs/fifo/settings`、`PUT /api/costs/fifo/records`、`POST /api/costs/fifo/records/remove`、`POST /api/costs/fifo/import`；报告 `GET /api/costs/fifo`、`/export.csv`。配置 `GET /api/costs/accounting`、`PUT /api/costs/accounting/policy`、`PUT /api/costs/accounting/{rate|rule|terms|movement|refund|coverage}`、`POST /api/costs/accounting/remove`、`/import`。写操作要求版本、JSON 和 `X-Pangu-Request: restock`，检查 Origin。
 
-历史 50 张采购单保持原金额和日期。现有 XLWMS 入库流水仅覆盖到 8 月初，不能据此推定后续未入库。未设置起始日或未确认期初前，报告显示缺口并阻止计算。
+仓储接入：`GET /api/costs/accounting/warehouse?start=...&end=...&kind=receipt|movement` 经财务读取只读 XLWMS 源；每次最多 5,000 流水，超限须缩小日期。显示原始时间、源覆盖、采购 / 订单候选；仅允许唯一匹配导入，实际数量来自源流水。入库时区未确认时导入无日期草稿；出库须先确认时区，夏令时歧义拒绝自动转换。`POST /api/costs/accounting/warehouse/import` 需要所选业务键及最新源 SHA256，原子导入，保留不可变源证据；重试跳过同内容，冲突不覆盖。
+
+毛利引擎 `GET /api/costs/margin?start=...&end=...&as_of=...&shop_key=...`，导出 `/api/costs/margin/export.csv`。按订单日期选定商品队列，平台款项累计到到账截止日，实际成本仅扣一次。三项成本、退款件数、财务账单或税费覆盖未知时毛利保持空；已知部分及缺口继续可查。财务负责补录和不可变核算快照，备货不写原财务账单。
+
+历史 50 张采购单保留原金额；“海运费用RMB”仍是 CNY。现有 XLWMS 流水仅覆盖 2026-07-04 至 2026-08-03，不能推定后续无入库或出库。生产未确认核算起始日、完整期初及源时间时区，不能生成完整历史毛利。功能已支持业务补齐，未建立会计期间锁定或总账过账。

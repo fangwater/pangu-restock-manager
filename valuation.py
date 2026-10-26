@@ -7,6 +7,7 @@ import sqlite3
 from collections import defaultdict, deque
 from datetime import date, datetime
 from decimal import Decimal, localcontext, ROUND_HALF_UP
+from landed import AccountingStore
 from procurement import CostError, CostStore, currency, number, record_id, text, timestamp, dumps
 
 ZERO = Decimal(0)
@@ -40,6 +41,7 @@ def rounded(value):
 class ValuationStore:
     def __init__(self, store):
         self.store = store
+        self.accounting = AccountingStore(store)
         with store.connection() as db:
             db.executescript('''
             CREATE TABLE IF NOT EXISTS cost_valuation_settings(id INTEGER PRIMARY KEY CHECK(id=1),
@@ -58,8 +60,9 @@ class ValuationStore:
             settings = {**json.loads(row['payload']), 'version': row['version'], 'updated_at': row['updated_at']}
             records = [CostStore.item(r) for r in db.execute('SELECT * FROM cost_stock_records WHERE deleted_at IS NULL ORDER BY id')]
             tickets = CostStore.rows(db, 'cost_tickets')
+            accounting = self.accounting.snapshot(db)
             history = [dict(r) for r in db.execute("SELECT id,entity,entity_id,action,created_at FROM cost_history WHERE entity IN ('stock_record','valuation_settings') ORDER BY id DESC LIMIT 30")]
-        data = {'version': 1, 'method': 'fifo', 'settings': settings, 'records': records, 'tickets': tickets}
+        data = {'version': 1, 'method': 'fifo', 'settings': settings, 'records': records, 'tickets': tickets, 'accounting': accounting}
         digest = hashlib.sha256(dumps(data).encode()).hexdigest()
         return {**data, 'sha256': digest, 'history': history, 'currencies': ['CNY', 'USD', 'EUR', 'HKD'],
                 'summary': {'receipts': sum(r['kind'] == 'receipt' for r in records),
@@ -93,7 +96,7 @@ class ValuationStore:
             db.execute('BEGIN IMMEDIATE')
             return self._save_record(db, payload)
 
-    def _save_record(self, db, payload, idempotent=False):
+    def _save_record(self, db, payload, idempotent=False, source_sha256=None):
         identity = record_id(payload.get('id'), True)
         row = db.execute('SELECT * FROM cost_stock_records WHERE id=?', (identity,)).fetchone() if identity else None
         if identity and not row:
@@ -133,17 +136,17 @@ class ValuationStore:
             amount = number(raw.get('amount'), '期初采购金额', True) if kind == 'opening' else None
             if ticket and sku not in ticket_lines:
                 raise CostError(f'采购库存单没有 SKU：{sku}')
-            lines.append({'warehouse_sku': sku, 'quantity': quantity, 'amount': amount})
+            lines.append({'warehouse_sku': sku, 'quantity': quantity, 'amount': amount, **({k: number(raw.get(k), '期初费用金额', True) for k in ('head_leg_amount','logistics_amount')} | {k: currency(raw.get(k)) for k in ('head_leg_currency','logistics_currency')} if kind == 'opening' else {})})
         after = {'kind': kind, 'record_no': name, 'warehouse_code': warehouse, 'received_date': received,
                  'ticket_id': ticket_id, 'ticket_version': ticket['version'] if ticket else None,
                  'currency': currency(payload.get('currency'), True) if kind == 'opening' else None,
                  'note': text(payload.get('note'), '备注', maximum=4000), 'lines': lines,
-                 'source_sha256': (old or {}).get('source_sha256')}
+                 'source_sha256': (old or {}).get('source_sha256') or source_sha256}
         key = dumps([kind, warehouse, name])
         existing = db.execute('SELECT * FROM cost_stock_records WHERE record_key=?', (key,)).fetchone()
         if existing and (not identity or existing['id'] != identity):
             existing_payload = json.loads(existing['payload'])
-            if idempotent and not existing['deleted_at'] and existing_payload == after:
+            if idempotent and not existing['deleted_at'] and {k:v for k,v in existing_payload.items() if k!='source_sha256'} == {k:v for k,v in after.items() if k!='source_sha256'}:
                 return {**CostStore.item(existing), 'already_imported': True}
             raise CostError('同仓库、同类型的单号已存在', 409)
         if ticket:
@@ -216,172 +219,21 @@ class ValuationStore:
                 if key in groups and any(groups[key].get(k) != v for k, v in header.items()):
                     raise CostError('同单号的日期、币种、采购单或备注不一致')
                 group = groups.setdefault(key, {**header, 'lines': []})
-                group['lines'].append({'warehouse_sku': row.get('SKU'), 'quantity': row.get('数量'), 'amount': row.get('金额')})
+                group['lines'].append({'warehouse_sku': row.get('SKU'), 'quantity': row.get('数量'), 'amount': row.get('金额'), 'head_leg_amount':row.get('头程金额'), 'head_leg_currency':row.get('头程币种'), 'logistics_amount':row.get('物流金额'), 'logistics_currency':row.get('物流币种')})
             results = [self._save_record(db, value, True) for value in groups.values()]
         return {'created': sum(not r.get('already_imported') for r in results), 'unchanged': sum(bool(r.get('already_imported')) for r in results)}
 
 
 def fifo_report(inputs, source, filters=None):
-    """Replay the complete shared inventory before applying any display filter."""
-    with localcontext() as ctx:
-        ctx.prec = 60
-        return _fifo_report(inputs, source, filters or {})
-
-
-def _fifo_report(inputs, source, filters):
-    settings = inputs['settings']
-    start = settings.get('start_date')
-    end = day(filters.get('end') or datetime.now().date().isoformat(), '截止日期')
-    display_start = day(filters.get('start') or start or end, '开始日期')
-    if display_start > end or (start and (display_start < start or end < start)):
-        raise CostError('查询日期须位于核算起始日及其之后，且开始不晚于截止')
-    issues = []
-    def issue(code, message, record=None):
-        issues.append({'code': code, 'message': message, 'record_id': record})
-    if not start:
-        issue('start_missing', '未设置核算起始日')
-    if not settings.get('opening_confirmed'):
-        issue('opening_unconfirmed', '期初库存尚未确认完整（无期初库存也须确认）')
-    base = {'method': 'fifo', 'range': {'start': display_start, 'end': end, 'replay_start': start},
-            'input_sha256': inputs['sha256'], 'settings_version': settings['version'], 'issues': issues,
-            'basis': '按订单时间测算，含待发货；同日入库先于订单；未做售后成本回冲；仅采购成本，未含头程和平台费用'}
-    if not start or not settings.get('opening_confirmed'):
-        return {**base, 'status': 'blocked', 'rows': [], 'remaining': [], 'summary': {}, 'shops': [], 'warehouses': []}
-    if not isinstance(source, dict) or source.get('version') != 1 or source.get('timezone') != 'Asia/Shanghai' or source.get('start') != start or source.get('end') != end or not isinstance(source.get('demands'), list):
-        raise CostError('订单数量快照的日期、版本或时区无效', 502)
-    base.update(source_sha256=source.get('sha256'), source_updated_at=source.get('source_updated_at'))
-    if source.get('missing_line_orders'):
-        issue('missing_order_lines', f"{source['missing_line_orders']} 个订单缺少完整 SKU 明细")
-    if source.get('unknown_order_time_orders'):
-        issue('unknown_order_time', f"{source['unknown_order_time_orders']} 个订单缺少业务时间，使用首次采集时间")
-    tickets = {t['id']: t for t in inputs['tickets']}
-    records = sorted(inputs['records'], key=lambda r: (r.get('received_date') or '9999', r['id']))
-    lots, receipt_cumulative = [], defaultdict(lambda: ZERO)
-    uncertain = set()
-    for r in records:
-        d = r.get('received_date')
-        problem = None
-        if not d:
-            problem = '缺少入库日期'
-        elif r['kind'] == 'opening' and d != start:
-            problem = '期初日期与核算起始日不一致'
-        elif r['kind'] == 'receipt' and d < start:
-            problem = '起始日前入库须计入期初库存，不得重复入库'
-        ticket = tickets.get(r.get('ticket_id')) if r['kind'] == 'receipt' else None
-        if r['kind'] == 'receipt' and (not ticket or ticket['version'] != r.get('ticket_version')):
-            problem = '采购库存单已删除或版本变化，须重新核对入库记录'
-        if problem:
-            issue('invalid_stock_record', f"{r['record_no']}：{problem}", r['id'])
-            uncertain.update((r['warehouse_code'], l['warehouse_sku']) for l in r['lines'])
-            continue
-        if d > end:
-            continue
-        purchase_lines = {l['warehouse_sku']: l for l in (ticket or {}).get('lines', [])}
-        for index, line in enumerate(r['lines']):
-            q = dec(line['quantity'])
-            amount = dec(line['amount']) if line.get('amount') is not None else None
-            code = r['currency']
-            if ticket:
-                p = purchase_lines.get(line['warehouse_sku'])
-                code = ticket.get('purchase_currency')
-                key = (ticket['id'], line['warehouse_sku'])
-                previous = receipt_cumulative[key]
-                receipt_cumulative[key] += q
-                if not p or dec(p['quantity']) <= 0 or receipt_cumulative[key] > dec(p['quantity']):
-                    issue('receipt_quantity', f"{r['record_no']}：SKU {line['warehouse_sku']} 入库数量与采购单不一致", r['id'])
-                    uncertain.add((r['warehouse_code'], line['warehouse_sku']))
-                    continue
-                amount = None if p.get('amount') is None else rounded(dec(p['amount']) * receipt_cumulative[key] / dec(p['quantity'])) - rounded(dec(p['amount']) * previous / dec(p['quantity']))
-            if amount is not None and amount < 0:
-                amount = None
-            if not code or amount is None:
-                issue('purchase_cost_missing', f"{r['record_no']}：SKU {line['warehouse_sku']} 缺少采购金额或币种", r['id'])
-            lots.append({'record_id': r['id'], 'record_version': r['version'], 'record_no': r['record_no'],
-                         'ticket_id': ticket['id'] if ticket else None, 'ticket_version': ticket['version'] if ticket else None,
-                         'ticket_no': ticket['ticket_no'] if ticket else None, 'date': d, 'kind': r['kind'],
-                         'warehouse_code': r['warehouse_code'], 'warehouse_sku': line['warehouse_sku'],
-                         'currency': code, 'quantity': q, 'amount': amount, 'used': ZERO, 'used_amount': ZERO, 'index': index})
-    lots.sort(key=lambda l: (l['date'], l['kind'] != 'opening', l['record_id'], l['index']))
-    queues = defaultdict(deque)
-    position, rows, tainted = 0, [], set()
-    demands = source['demands']
-    seen = set()
-    unknown_warehouse_skus = {d['warehouse_sku'] for d in demands if not d['warehouse_code']}
-    for demand in sorted(demands, key=lambda d: (d['occurred_at'], d['order_id'], d['id'])):
-        if demand['id'] in seen:
-            raise CostError('订单快照包含重复明细，计算已中止', 502)
-        seen.add(demand['id'])
-        when = day(demand['date'], '订单日期')
-        q = number(demand.get('warehouse_quantity'), '仓库需求数量', True)
-        if not q or dec(q) <= 0 or not start <= when <= end:
-            raise CostError('订单快照包含无效数量或日期', 502)
-        q = dec(q)
-        while position < len(lots) and lots[position]['date'] <= when:
-            l = lots[position]
-            queues[(l['warehouse_code'], l['warehouse_sku'])].append(l)
-            position += 1
-        key = (demand['warehouse_code'], demand['warehouse_sku'])
-        reasons, allocations, known = [], [], defaultdict(lambda: ZERO)
-        if not all(key):
-            reasons.append('缺少仓库或仓库 SKU')
-        if key[0] and key[1] in unknown_warehouse_skus:
-            reasons.append('该 SKU 存在仓库不明的订单需求')
-        if key in uncertain:
-            reasons.append('该仓库 SKU 存在未核对的入库记录')
-        if key in tainted:
-            reasons.append('此前订单库存不足，后续批次归属待核对')
-        remaining = q
-        queue = queues[key]
-        while remaining > 0 and queue:
-            lot = queue[0]
-            take = min(remaining, lot['quantity'] - lot['used'])
-            lot['used'] += take
-            amount = None
-            if lot['amount'] is not None and lot['currency']:
-                cumulative = rounded(lot['amount'] * lot['used'] / lot['quantity'])
-                amount = cumulative - lot['used_amount']
-                lot['used_amount'] = cumulative
-                known[lot['currency']] += amount
-            else:
-                reasons.append('批次采购成本缺失')
-            allocations.append({k: lot[k] for k in ('record_id', 'record_version', 'record_no', 'ticket_id', 'ticket_version', 'ticket_no', 'date', 'currency')} | {'quantity': fmt(take), 'amount': fmt(amount) if amount is not None else None})
-            remaining -= take
-            if lot['used'] == lot['quantity']:
-                queue.popleft()
-        if remaining > 0:
-            reasons.append('入库库存不足')
-            tainted.add(key)
-        if source.get('missing_line_orders') or source.get('unknown_order_time_orders'):
-            reasons.append('订单源数据不完整，批次归属待核对')
-        reasons = list(dict.fromkeys(reasons))
-        rows.append({**demand, 'status': 'review' if reasons else 'complete', 'reasons': reasons,
-                     'shortage_quantity': fmt(remaining), 'known_amounts': {c: fmt(a) for c, a in sorted(known.items())},
-                     'cost_amounts': None if reasons else {c: fmt(a) for c, a in sorted(known.items())}, 'allocations': allocations})
-    def matches(r):
-        return (not filters.get('shop') or r.get('shop_key') == filters['shop']) and (not filters.get('warehouse') or r['warehouse_code'] == filters['warehouse']) and (not filters.get('q') or filters['q'].lower() in ' '.join(str(r.get(k) or '') for k in ('warehouse_sku', 'platform_sku', 'order_no', 'record_no')).lower())
-    selected = [r for r in rows if display_start <= r['date'] <= end and matches(r) and (not filters.get('status') or r['status'] == filters['status'])]
-    totals = defaultdict(lambda: ZERO)
-    for row in selected:
-        for code, amount in (row['cost_amounts'] or {}).items():
-            totals[code] += dec(amount)
-    remaining_lots = [{k: l[k] for k in ('record_id', 'record_no', 'date', 'warehouse_code', 'warehouse_sku', 'currency')}
-                      | {'quantity': fmt(l['quantity'] - l['used']), 'amount': fmt(l['amount'] - l['used_amount']) if l['amount'] is not None else None}
-                      for l in lots if l['quantity'] > l['used']]
-    return {**base, 'status': 'review' if issues or any(r['status'] != 'complete' for r in rows) else 'complete', 'rows': selected,
-            'remaining': remaining_lots, 'shops': sorted({r['shop_key'] for r in rows}),
-            'warehouses': sorted({r['warehouse_code'] for r in rows} | {l['warehouse_code'] for l in lots}),
-            'summary': {'replayed_lines': len(rows), 'selected_lines': len(selected),
-                        'complete_lines': sum(r['status'] == 'complete' for r in selected),
-                        'review_lines': sum(r['status'] != 'complete' for r in selected),
-                        'complete_cost_totals': {c: fmt(a) for c, a in sorted(totals.items())}}}
+    from costing import report
+    return report(inputs, source, filters or {})
 
 
 def fifo_csv(report):
-    stream = io.StringIO()
-    writer = csv.writer(stream)
-    writer.writerow(['订单日期','平台','店铺','订单号','销售SKU','仓库','仓库SKU','需求数量','状态','缺口数量','完整采购成本','已知部分金额','异常','批次明细','输入SHA256','订单SHA256','配置版本'])
-    for r in report['rows']:
-        cells = [r['date'], r['platform'], r['shop_key'], r['order_no'], r['platform_sku'], r['warehouse_code'], r['warehouse_sku'], r['warehouse_quantity'],
-                 r['status'], r['shortage_quantity'], dumps(r['cost_amounts']), dumps(r['known_amounts']), '；'.join(r['reasons']), dumps(r['allocations']), report['input_sha256'], report.get('source_sha256'), report['settings_version']]
-        writer.writerow(["'" + c if isinstance(c, str) and c.lstrip().startswith(('=', '+', '-', '@')) else c for c in cells])
-    return ('\ufeff' + stream.getvalue()).encode('utf-8')
+    stream=io.StringIO();writer=csv.writer(stream)
+    writer.writerow(['事件','日期','平台','店铺','订单号','销售SKU','仓库','仓库SKU','仓库数量','状态','缺口数量','完整采购成本','已知采购金额','头程原币','物流原币','报告币成本','异常','批次明细','输入SHA256','数量源SHA256','配置版本'])
+    events=report['rows']+[{**r,'date':r['returned_date'],'event':'refund','shortage_quantity':'0','cost_amounts':r['components']['purchase'] if r['complete']['purchase'] and not r['reasons'] else None,'known_amounts':r['components']['purchase'],'landed_reasons':r['reasons'],'landed_status':r['status']} for r in report.get('refunds',[])]
+    for r in events:
+        cells=[r.get('event','order'),r['date'],r['platform'],r['shop_key'],r['order_no'],r['platform_sku'],r['warehouse_code'],r['warehouse_sku'],r['warehouse_quantity'],r.get('landed_status',r['status']),r['shortage_quantity'],dumps(r['cost_amounts']),dumps(r['known_amounts']),dumps(r['components']['head_leg']),dumps(r['components']['logistics']),dumps(r.get('converted',{})),'；'.join(r['landed_reasons']),dumps(r['allocations']),report['input_sha256'],report.get('source_sha256'),report['settings_version']]
+        writer.writerow(["'"+v if isinstance(v,str) and (v.lstrip().startswith(('=','+','@')) or (v.lstrip().startswith('-') and not __import__('re').fullmatch(r'-[0-9]+(?:\.[0-9]+)?',v))) else v for v in cells])
+    return ('\ufeff'+stream.getvalue()).encode('utf-8')

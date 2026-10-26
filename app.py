@@ -292,9 +292,9 @@ class Manager:
         self.shein_url = os.environ.get('SHEIN_API_BASE_URL', 'https://pangutech.online/shein/api').rstrip('/')
 
     @staticmethod
-    def get(url, headers=None):
+    def get(url, headers=None, timeout=40):
         request = Request(url, headers={'Accept': 'application/json', 'User-Agent': 'Pangu-Restock/1.0', **(headers or {})})
-        with urlopen(request, timeout=40) as response:
+        with urlopen(request, timeout=timeout) as response:
             body = response.read(32 * 1024 * 1024 + 1)
         if len(body) > 32 * 1024 * 1024:
             raise ValueError('接口响应超过大小限制')
@@ -303,20 +303,41 @@ class Manager:
             raise ValueError('数据接口返回失败')
         return envelope
 
-    def fifo(self, query):
-        inputs = self.valuation.inputs()
+    def fifo(self, query, inputs=None):
+        inputs = inputs or self.valuation.inputs()
         start = inputs['settings'].get('start_date')
         end = day(query.get('end') or now()[:10], '截止日期')
         if start and (end < start or (datetime.fromisoformat(end) - datetime.fromisoformat(start)).days > 1461):
             raise CostError('截止日期须在核算起始日之后且相差不超过四年')
         source = None
-        if start and inputs['settings'].get('opening_confirmed'):
+        if start and inputs['settings'].get('opening_confirmed') and inputs['accounting']['policy']['demand_basis'] == 'order':
             try:
                 source = self.get(self.sales_url + '/api/restock/cost-demands?' + urlencode({'start': start, 'end': end}))['data']
             except Exception:
                 LOG.exception('FIFO order source failed')
                 raise CostError('订单数量源读取失败，未使用旧快照或零数量计算', 502)
         return fifo_report(inputs, source, {**query, 'end': end})
+
+    def margin(self, query):
+        from margin import build_margin
+        inputs=self.valuation.inputs()
+        end=day(query.get('end') or now()[:10],'订单截止日期')
+        start=day(query.get('start') or end[:8]+'01','订单开始日期')
+        asof=day(query.get('as_of') or end,'到账截止日期')
+        if start>end or asof<end:
+            raise CostError('日期顺序须为订单开始 ≤ 订单截止 ≤ 到账截止')
+        try:
+            financial=self.get(self.sales_url+'/api/profit/margin-source?'+urlencode({'start':start,'end':end,'as_of':asof,'shop_key':query.get('shop_key','')}),timeout=70)['data']
+        except Exception:
+            LOG.exception('Margin financial source failed')
+            raise CostError('财务收入源读取失败，未以零金额计算',502)
+        # Always replay all warehouses and shops, irrespective of margin filters.
+        valuation_start=inputs['settings'].get('start_date')
+        if valuation_start and valuation_start>asof:
+            costs={'status':'blocked','rows':[],'refunds':[],'issues':[{'code':'start_after_range','message':'核算起始日晚于报告期间'}]}
+        else:
+            costs=self.fifo({'end':asof},inputs)
+        return build_margin(financial,costs,inputs,query)
 
     def sales(self):
         data = self.get(self.sales_url + '/api/restock/snapshot?days=730&version=3')['data']
@@ -576,6 +597,23 @@ class Handler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == '/api/health':
                 self.reply({'service': 'pangu-restock-manager', 'time': now()})
+            elif path in ('/api/costs/margin','/api/costs/margin/export.csv'):
+                report=self.manager.margin(self.query())
+                if path.endswith('.csv'):
+                    from margin import margin_csv, cash_csv
+                    self.send_bytes(cash_csv(report,self.query()['part']) if self.query().get('part') in ('unassigned','overhead') else margin_csv(report),'text/csv; charset=utf-8',filename='order-gross-margin.csv')
+                else:
+                    try:
+                        page=int(self.query().get('page','1'))
+                        if page<1:raise ValueError()
+                    except ValueError:raise CostError('页码无效')
+                    rows=report['rows'];cash=report['unassigned'];full=self.query().get('all')=='1';self.reply({**report,'rows':rows if full else rows[(page-1)*50:page*50],'unassigned':cash if full else cash[(page-1)*50:page*50],'unassigned_total':len(cash),'total':len(rows),'page':page,'page_size':50})
+            elif path == '/api/costs/accounting/warehouse':
+                from warehouse_costs import evidence
+                self.reply(evidence(self.manager,self.query()))
+            elif path == '/api/costs/accounting':
+                data=self.manager.valuation.inputs()
+                self.reply({**data['accounting'],'tickets':data['tickets'],'templates':self.manager.costs.snapshot()['templates']})
             elif path == '/api/costs/fifo/inputs':
                 self.reply(self.manager.valuation.inputs())
             elif path in ('/api/costs/fifo', '/api/costs/fifo/export.csv'):
@@ -639,7 +677,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith('/api/'):
                 raise APIError('接口不存在', 404)
             else:
-                files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/fifo.js': ('fifo.js', 'application/javascript'), '/costs.js': ('costs.js', 'application/javascript'), '/costs.css': ('costs.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/echarts.min.js': ('vendor/echarts.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
+                files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/warehouse-costs.js': ('warehouse-costs.js', 'application/javascript'), '/accounting.js': ('accounting.js', 'application/javascript'), '/fifo.js': ('fifo.js', 'application/javascript'), '/costs.js': ('costs.js', 'application/javascript'), '/costs.css': ('costs.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/echarts.min.js': ('vendor/echarts.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
                 if path not in files:
                     raise APIError('页面不存在', 404)
                 filename, mime = files[path]
@@ -662,7 +700,19 @@ class Handler(BaseHTTPRequestHandler):
         try:
             payload = self.body()
             path = urlparse(self.path).path
-            if path == '/api/costs/fifo/settings' and self.command == 'PUT':
+            if path == '/api/costs/accounting/warehouse/import' and self.command == 'POST':
+                from warehouse_costs import import_evidence
+                self.reply(import_evidence(self.manager,payload))
+            elif path == '/api/costs/accounting/policy' and self.command == 'PUT':
+                self.reply(self.manager.valuation.accounting.save_policy(payload))
+            elif path == '/api/costs/accounting/remove' and self.command == 'POST':
+                self.reply(self.manager.valuation.accounting.remove(payload))
+            elif path == '/api/costs/accounting/import' and self.command == 'POST':
+                from landed import import_csv
+                self.reply(import_csv(self.manager.valuation.accounting,payload.get('kind'),payload.get('csv')))
+            elif re.fullmatch(r'/api/costs/accounting/(rate|rule|terms|movement|refund|coverage)',path) and self.command == 'PUT':
+                self.reply(self.manager.valuation.accounting.save(path.rsplit('/',1)[1],payload))
+            elif path == '/api/costs/fifo/settings' and self.command == 'PUT':
                 self.reply(self.manager.valuation.save_settings(payload))
             elif path == '/api/costs/fifo/records' and self.command == 'PUT':
                 self.reply(self.manager.valuation.save_record(payload))

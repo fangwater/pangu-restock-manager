@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from zoneinfo import ZoneInfo
 
 CURRENCIES = ('CNY', 'USD', 'EUR', 'HKD')
+DEFAULT_PURCHASE_CURRENCY = 'CNY'
 
 
 class CostError(Exception):
@@ -107,6 +108,16 @@ class CostStore:
                             db.execute(f'UPDATE {table} SET payload=?,version=version+1 WHERE id=?', (dumps(after), row['id']))
                             self.audit(db, entity, row['id'], 'normalize_currency', before, after)
                 db.execute('INSERT INTO cost_data_migrations VALUES(?,?)', ('currency-cny-v1', timestamp()))
+            # Purchase amounts were confirmed as CNY by the business owner.
+            # Freight categories and their historical currencies are independent.
+            if not db.execute("SELECT 1 FROM cost_data_migrations WHERE name='purchase-cny-confirmed-20261026'").fetchone():
+                for row in list(db.execute('SELECT * FROM cost_tickets')):
+                    before = json.loads(row['payload'])
+                    if not str(before.get('purchase_currency') or '').strip():
+                        after = {**before, 'purchase_currency': DEFAULT_PURCHASE_CURRENCY}
+                        db.execute('UPDATE cost_tickets SET payload=?,version=version+1 WHERE id=?', (dumps(after), row['id']))
+                        self.audit(db, 'ticket', row['id'], 'confirm_purchase_currency', before, after)
+                db.execute('INSERT INTO cost_data_migrations VALUES(?,?)', ('purchase-cny-confirmed-20261026', timestamp()))
 
     @staticmethod
     def item(row):
@@ -181,7 +192,7 @@ class CostStore:
         if not full:
             tickets = [{k: v for k, v in t.items() if k not in ('lines', 'costs')} for t in tickets]
         return {'version': 1, 'owner': 'pangu-restock-manager', 'generated_at': timestamp(), 'summary': summary,
-                'currencies': list(CURRENCIES),
+                'currencies': list(CURRENCIES), 'defaults': {'purchase_currency': DEFAULT_PURCHASE_CURRENCY},
                 'templates': templates, 'tickets': sorted(tickets, key=lambda t: t['updated_at'], reverse=True),
                 'migration': {**dict(migration), 'counts': json.loads(migration['counts'])} if migration else None}
 
@@ -270,7 +281,7 @@ class CostStore:
                 except ValueError:
                     raise CostError('成本生效日期须为 YYYY-MM-DD')
             after = {'ticket_no': name, 'cost_template_id': template_id,
-                     'purchase_currency': currency(payload.get('purchase_currency')),
+                     'purchase_currency': currency(payload.get('purchase_currency', DEFAULT_PURCHASE_CURRENCY), True),
                      'effective_date': effective or None, 'note': text(payload.get('note'), '备注', maximum=4000),
                      'source_shop_key': (old or {}).get('source_shop_key', ''), 'lines': lines, 'costs': costs}
             stamp = timestamp()
@@ -425,7 +436,7 @@ class CostStore:
                     costs.append({**entry, 'category_id': category['id'], 'category_name': category['name'],
                                   'cost_type_name': kind['name'], 'calculation_mode': kind['calculation_mode'], 'currency': currency(category['currency'], True),
                                   **{field: number(entry.get(field), field) for field in ('quantity', 'unit_price', 'amount')}})
-                payload = {**ticket, 'source_shop_key': ticket.get('shop_key', ''), 'purchase_currency': '',
+                payload = {**ticket, 'source_shop_key': ticket.get('shop_key', ''), 'purchase_currency': DEFAULT_PURCHASE_CURRENCY,
                            'effective_date': None, 'lines': lines, 'costs': costs}
                 db.execute('INSERT INTO cost_tickets(id,ticket_no,payload,version,created_at,updated_at) VALUES(?,?,?,1,?,?)',
                            (ticket['id'], ticket['ticket_no'], dumps(payload), ticket['created_at'], ticket['updated_at']))

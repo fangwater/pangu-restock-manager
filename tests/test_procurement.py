@@ -41,11 +41,11 @@ class ProcurementTests(unittest.TestCase):
         detail = self.costs.detail(61)
         self.assertEqual(detail['lines'][0]['id'], 100)
         self.assertEqual(detail['lines'][0]['amount'], '0.3000000003')
-        self.assertEqual(detail['purchase_currency'], '')
+        self.assertEqual(detail['purchase_currency'], 'CNY')
         self.assertIsNone(detail['effective_date'])
         self.assertEqual(self.costs.detail(62)['lines'][0]['unit_price'], None)
         self.assertEqual(self.costs.detail(62)['fee_totals'], {})
-        self.assertEqual(snapshot['summary']['purchase_totals'], {'': '0.3000000003'})
+        self.assertEqual(snapshot['summary']['purchase_totals'], {'CNY': '0.3000000003'})
 
     def test_transfer_is_atomic_and_reimport_cannot_overwrite_subsequent_changes(self):
         broken = fixture()
@@ -78,10 +78,31 @@ class ProcurementTests(unittest.TestCase):
         migrated = CostStore(self.store)
         first = migrated.detail(61)
         self.assertEqual(first['fee_totals'], {'CNY': '2000.25', 'USD': '200.02'})
-        self.assertEqual(first['purchase_currency'], '')
+        self.assertEqual(first['purchase_currency'], 'CNY')
         self.assertEqual(CostStore(self.store).detail(61)['version'], first['version'])
         with self.store.connection() as db:
             self.assertEqual(db.execute('SELECT source_payload FROM cost_migrations').fetchone()[0], archive)
+
+    def test_confirm_purchase_currency_preserves_freight_and_explicit_currency(self):
+        self.costs.import_legacy(fixture())
+        original = self.costs.snapshot(full=True)
+        with self.store.connection() as db:
+            archive = db.execute('SELECT source_payload FROM cost_migrations').fetchone()[0]
+            db.execute("DELETE FROM cost_data_migrations WHERE name='purchase-cny-confirmed-20261026'")
+            for row in db.execute('SELECT id,payload FROM cost_tickets').fetchall():
+                value = json.loads(row['payload'])
+                value['purchase_currency'] = '' if row['id'] == 61 else 'EUR'
+                db.execute('UPDATE cost_tickets SET payload=? WHERE id=?', (dumps(value), row['id']))
+        migrated = CostStore(self.store)
+        first = migrated.detail(61)
+        self.assertEqual(first['purchase_currency'], 'CNY')
+        self.assertEqual(migrated.detail(62)['purchase_currency'], 'EUR')
+        self.assertEqual(first['costs'], next(t for t in original['tickets'] if t['id'] == 61)['costs'])
+        self.assertEqual(first['lines'], next(t for t in original['tickets'] if t['id'] == 61)['lines'])
+        self.assertEqual(CostStore(self.store).detail(61)['version'], first['version'])
+        with self.store.connection() as db:
+            self.assertEqual(db.execute('SELECT source_payload FROM cost_migrations').fetchone()[0], archive)
+            self.assertEqual(db.execute("SELECT count(*) FROM cost_history WHERE action='confirm_purchase_currency'").fetchone()[0], 1)
 
     def test_purchase_and_quantity_fee_arithmetic_versions_and_missing_values(self):
         self.costs.import_legacy(fixture())

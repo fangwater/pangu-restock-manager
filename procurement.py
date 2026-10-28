@@ -4,7 +4,7 @@ import json
 import sqlite3
 import uuid
 from datetime import date, datetime
-from decimal import Decimal, InvalidOperation
+from decimal import Decimal, InvalidOperation, localcontext
 from zoneinfo import ZoneInfo
 
 CURRENCIES = ('CNY', 'USD', 'EUR', 'HKD')
@@ -60,7 +60,9 @@ def currency(value, required=False):
 
 def total(values):
     known = [Decimal(str(v)) for v in values if v is not None and v != '']
-    return format(sum(known, Decimal(0)), 'f') if known else None
+    with localcontext() as ctx:
+        ctx.prec = 60
+        return format(sum(known, Decimal(0)), 'f') if known else None
 
 
 def record_id(value, optional=False):
@@ -86,6 +88,9 @@ class CostStore:
               entity_id INTEGER NOT NULL,action TEXT NOT NULL,before_json TEXT,after_json TEXT,created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cost_migrations(source TEXT PRIMARY KEY,sha256 TEXT NOT NULL,
               imported_at TEXT NOT NULL,counts TEXT NOT NULL,source_payload TEXT NOT NULL);
+            CREATE TABLE IF NOT EXISTS cost_ticket_imports(id INTEGER PRIMARY KEY AUTOINCREMENT,
+              reference TEXT NOT NULL,file_sha256 TEXT NOT NULL,revision_sha256 TEXT NOT NULL,
+              result_json TEXT NOT NULL,csv_text TEXT NOT NULL,created_at TEXT NOT NULL);
             CREATE TABLE IF NOT EXISTS cost_data_migrations(name TEXT PRIMARY KEY,applied_at TEXT NOT NULL);
             ''')
             db.execute('BEGIN IMMEDIATE')
@@ -206,96 +211,107 @@ class CostStore:
             return {**self.decorate(self.item(row), templates), 'history': history}
 
     def save_ticket(self, payload):
-        with self.store.connection() as db:
+        with localcontext() as ctx, self.store.connection() as db:
+            ctx.prec = 60
             db.execute('BEGIN IMMEDIATE')
-            identity = record_id(payload.get('id'), optional=True)
-            row = db.execute('SELECT * FROM cost_tickets WHERE id=?', (identity,)).fetchone() if identity else None
-            if identity and not row:
-                raise CostError('库存单不存在', 404)
-            old = self.item(row) if row else None
-            self.check_version(old, payload)
-            name = text(payload.get('ticket_no'), '库存单号', True)
-            template_id = record_id(payload.get('cost_template_id'), optional=True)
-            template_row = db.execute('SELECT * FROM cost_templates WHERE id=? AND deleted_at IS NULL', (template_id,)).fetchone() if template_id else None
-            if template_id and not template_row:
-                raise CostError('成本模板不存在')
-            template_id = template_row['id'] if template_row else None
-            types = self.types(self.item(template_row)) if template_row else {}
-            raw_lines = payload.get('lines')
-            if not isinstance(raw_lines, list) or not 1 <= len(raw_lines) <= 2000:
-                raise CostError('库存单须包含 1–2000 条 SKU 明细')
-            lines, skus = [], set()
-            for line in raw_lines:
-                if not isinstance(line, dict):
-                    raise CostError('SKU 明细格式无效')
-                sku = text(line.get('warehouse_sku'), '仓库 SKU', True)
-                if sku in skus:
-                    raise CostError(f'SKU 重复：{sku}')
-                skus.add(sku)
-                quantity = number(line.get('quantity'), '数量', True)
-                if quantity is None:
-                    raise CostError('请填写 SKU 数量')
-                price = number(line.get('unit_price'), '采购单价')
-                amount = number(line.get('amount'), '采购金额')
-                if amount is None and price is not None:
-                    amount = number(Decimal(quantity) * Decimal(price), '采购金额')
-                lines.append({'id': line.get('id'), 'warehouse_sku': sku, 'quantity': quantity,
-                              'unit_price': price, 'amount': amount, 'note': text(line.get('note'), 'SKU 备注', maximum=2000)})
-            raw_costs = payload.get('costs', [])
-            if not isinstance(raw_costs, list) or len(raw_costs) > 2000:
-                raise CostError('费用明细格式无效')
-            costs, seen = [], set()
-            old_costs = {str(c['cost_type_id']): c for c in (old or {}).get('costs', [])}
-            for entry in raw_costs:
-                if not isinstance(entry, dict):
-                    raise CostError('费用明细格式无效')
-                key = str(entry.get('cost_type_id'))
-                if key not in types or key in seen:
-                    raise CostError('费用类型不存在或重复')
-                seen.add(key)
-                kind = types[key]
-                quantity = number(entry.get('quantity'), '费用数量', True)
-                price = number(entry.get('unit_price'), '费用单价')
-                amount = number(entry.get('amount'), '费用金额')
-                note = text(entry.get('note'), '费用备注', maximum=2000)
-                if kind['calculation_mode'] == 'quantity_x_unit':
-                    if (quantity is None) != (price is None):
-                        raise CostError('费用数量和单价须同时填写')
-                    if quantity is not None:
-                        amount = number(Decimal(quantity) * Decimal(price), '费用金额')
-                else:
-                    quantity = price = None
-                if quantity is None and price is None and amount is None and not note:
-                    continue
-                previous = old_costs.get(key) if old and old.get('cost_template_id') == template_id else None
-                costs.append({'id': entry.get('id'), 'cost_type_id': kind['id'],
-                              'category_id': kind['category_id'], 'category_name': kind['category_name'],
-                              'cost_type_name': kind['name'], 'calculation_mode': kind['calculation_mode'],
-                              'currency': previous['currency'] if previous else kind['currency'],
-                              'quantity': quantity, 'unit_price': price, 'amount': amount, 'note': note})
-            effective = text(payload.get('effective_date'), '成本生效日期', maximum=10)
-            if effective:
-                try:
-                    if date.fromisoformat(effective).isoformat() != effective:
-                        raise ValueError()
-                except ValueError:
-                    raise CostError('成本生效日期须为 YYYY-MM-DD')
-            after = {'ticket_no': name, 'cost_template_id': template_id,
-                     'purchase_currency': currency(payload.get('purchase_currency', DEFAULT_PURCHASE_CURRENCY), True),
-                     'effective_date': effective or None, 'note': text(payload.get('note'), '备注', maximum=4000),
-                     'source_shop_key': (old or {}).get('source_shop_key', ''), 'lines': lines, 'costs': costs}
-            stamp = timestamp()
-            try:
-                if old:
-                    db.execute('UPDATE cost_tickets SET ticket_no=?,payload=?,version=version+1,updated_at=? WHERE id=?',
-                               (name, dumps(after), stamp, identity))
-                else:
-                    identity = db.execute('INSERT INTO cost_tickets(ticket_no,payload,version,created_at,updated_at) VALUES(?,?,1,?,?)',
-                                          (name, dumps(after), stamp, stamp)).lastrowid
-            except sqlite3.IntegrityError:
-                raise CostError('库存单号已存在', 409)
-            self.audit(db, 'ticket', identity, 'update' if old else 'create', old, after)
+            old, after = self.prepare_ticket(db, payload)
+            identity = self.write_ticket(db, old, after)
         return self.detail(identity)
+
+    def prepare_ticket(self, db, payload):
+        identity = record_id(payload.get('id'), optional=True)
+        row = db.execute('SELECT * FROM cost_tickets WHERE id=?', (identity,)).fetchone() if identity else None
+        if identity and not row:
+            raise CostError('库存单不存在', 404)
+        old = self.item(row) if row else None
+        self.check_version(old, payload)
+        name = text(payload.get('ticket_no'), '库存单号', True)
+        template_id = record_id(payload.get('cost_template_id'), optional=True)
+        template_row = db.execute('SELECT * FROM cost_templates WHERE id=? AND deleted_at IS NULL', (template_id,)).fetchone() if template_id else None
+        if template_id and not template_row:
+            raise CostError('成本模板不存在')
+        template_id = template_row['id'] if template_row else None
+        types = self.types(self.item(template_row)) if template_row else {}
+        raw_lines = payload.get('lines')
+        if not isinstance(raw_lines, list) or not 1 <= len(raw_lines) <= 2000:
+            raise CostError('库存单须包含 1–2000 条 SKU 明细')
+        lines, skus = [], set()
+        for line in raw_lines:
+            if not isinstance(line, dict):
+                raise CostError('SKU 明细格式无效')
+            sku = text(line.get('warehouse_sku'), '仓库 SKU', True)
+            if sku in skus:
+                raise CostError(f'SKU 重复：{sku}')
+            skus.add(sku)
+            quantity = number(line.get('quantity'), '数量', True)
+            if quantity is None:
+                raise CostError('请填写 SKU 数量')
+            price = number(line.get('unit_price'), '采购单价')
+            amount = number(line.get('amount'), '采购金额')
+            if amount is None and price is not None:
+                amount = number(Decimal(quantity) * Decimal(price), '采购金额')
+            lines.append({'id': line.get('id'), 'warehouse_sku': sku, 'quantity': quantity,
+                          'unit_price': price, 'amount': amount, 'note': text(line.get('note'), 'SKU 备注', maximum=2000)})
+        raw_costs = payload.get('costs', [])
+        if not isinstance(raw_costs, list) or len(raw_costs) > 2000:
+            raise CostError('费用明细格式无效')
+        costs, seen = [], set()
+        old_costs = {str(c['cost_type_id']): c for c in (old or {}).get('costs', [])}
+        for entry in raw_costs:
+            if not isinstance(entry, dict):
+                raise CostError('费用明细格式无效')
+            key = str(entry.get('cost_type_id'))
+            if key not in types or key in seen:
+                raise CostError('费用类型不存在或重复')
+            seen.add(key)
+            kind = types[key]
+            quantity = number(entry.get('quantity'), '费用数量', True)
+            price = number(entry.get('unit_price'), '费用单价')
+            amount = number(entry.get('amount'), '费用金额')
+            note = text(entry.get('note'), '费用备注', maximum=2000)
+            if kind['calculation_mode'] == 'quantity_x_unit':
+                if (quantity is None) != (price is None):
+                    raise CostError('费用数量和单价须同时填写')
+                if quantity is not None:
+                    amount = number(Decimal(quantity) * Decimal(price), '费用金额')
+            else:
+                quantity = price = None
+            if quantity is None and price is None and amount is None and not note:
+                continue
+            previous = old_costs.get(key) if old and old.get('cost_template_id') == template_id else None
+            costs.append({'id': entry.get('id'), 'cost_type_id': kind['id'],
+                          'category_id': kind['category_id'], 'category_name': kind['category_name'],
+                          'cost_type_name': kind['name'], 'calculation_mode': kind['calculation_mode'],
+                          'currency': previous['currency'] if previous else kind['currency'],
+                          'quantity': quantity, 'unit_price': price, 'amount': amount, 'note': note})
+        effective = text(payload.get('effective_date'), '成本生效日期', maximum=10)
+        if effective:
+            try:
+                if date.fromisoformat(effective).isoformat() != effective:
+                    raise ValueError()
+            except ValueError:
+                raise CostError('成本生效日期须为 YYYY-MM-DD')
+        after = {'ticket_no': name, 'cost_template_id': template_id,
+                 'purchase_currency': currency(payload.get('purchase_currency', DEFAULT_PURCHASE_CURRENCY), True),
+                 'effective_date': effective or None, 'note': text(payload.get('note'), '备注', maximum=4000),
+                 'source_shop_key': (old or {}).get('source_shop_key', ''), 'lines': lines, 'costs': costs}
+        return old, after
+
+    def write_ticket(self, db, old, after, action=None, import_context=None):
+        identity = old['id'] if old else None
+        name = after['ticket_no']
+        stamp = timestamp()
+        try:
+            if old:
+                db.execute('UPDATE cost_tickets SET ticket_no=?,payload=?,version=version+1,updated_at=? WHERE id=?',
+                           (name, dumps(after), stamp, identity))
+            else:
+                identity = db.execute('INSERT INTO cost_tickets(ticket_no,payload,version,created_at,updated_at) VALUES(?,?,1,?,?)',
+                                      (name, dumps(after), stamp, stamp)).lastrowid
+        except sqlite3.IntegrityError:
+            raise CostError('库存单号已存在', 409)
+        self.audit(db, 'ticket', identity, action or ('update' if old else 'create'), old, {**after, **({'import': import_context} if import_context else {})})
+        return identity
 
     def save_template(self, payload):
         with self.store.connection() as db:

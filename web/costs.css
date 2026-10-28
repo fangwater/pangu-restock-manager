@@ -44,3 +44,11 @@
 .acct-policy { padding:16px; margin-bottom:16px; align-items:end; }
 .acct-tabs { display:flex; flex-wrap:wrap; gap:8px; margin-bottom:16px; }
 .acct-tabs+.cost-toolbar { margin-top:16px; }
+
+.cost-bulk-actions { flex-wrap:wrap; }
+.cost-import-summary { margin:16px 0; }
+.cost-import-history { margin-top:24px; font-size:12px; }
+.cost-import-changes td { white-space:normal; overflow-wrap:anywhere; max-width:340px; }
+
+.cost-import-field { grid-column:span 2; }
+@media(max-width:560px){.cost-import-field{grid-column:auto;}}

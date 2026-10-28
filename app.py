@@ -631,6 +631,26 @@ class Handler(BaseHTTPRequestHandler):
                     except ValueError:
                         raise CostError('页码无效')
                     self.reply({**report, 'rows': rows[(page-1)*50:page*50], 'total': len(rows), 'page': page, 'page_size': 50})
+            elif path == '/api/costs/tickets/export.csv':
+                from purchase_import import export_csv
+                query = self.query()
+                self.send_bytes(export_csv(self.manager.costs, query, template=query.get('template_only') == '1', catalog=query.get('catalog') == '1'),
+                                'text/csv; charset=utf-8', filename='purchase-costs.csv')
+            elif path == '/api/costs/tickets/imports':
+                from purchase_import import history
+                self.reply(history(self.manager.costs))
+            elif re.fullmatch(r'/api/costs/tickets/imports/[1-9][0-9]*', path):
+                from purchase_import import history
+                batch = history(self.manager.costs, int(path.rsplit('/', 1)[1]))
+                if self.query().get('export') == '1':
+                    # Re-encode using the same spreadsheet text protection as exports.
+                    import purchase_import
+                    parsed = purchase_import.parse_csv(batch['csv_text'])[1]
+                    self.send_bytes(purchase_import.encode_rows([label for _, label in purchase_import.FIELDS],
+                                    [[row[key] for key, _ in purchase_import.FIELDS] for row in parsed]),
+                                    'text/csv; charset=utf-8', filename='purchase-import.csv')
+                else:
+                    self.reply({k: v for k, v in batch.items() if k not in ('csv_text', 'result_json')})
             elif path in ('/api/costs', '/api/costs/export'):
                 self.reply(self.manager.costs.snapshot(full=path.endswith('/export')))
             elif re.fullmatch(r'/api/costs/tickets/[1-9][0-9]*', path):
@@ -677,7 +697,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith('/api/'):
                 raise APIError('接口不存在', 404)
             else:
-                files = {'/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/warehouse-costs.js': ('warehouse-costs.js', 'application/javascript'), '/accounting.js': ('accounting.js', 'application/javascript'), '/fifo.js': ('fifo.js', 'application/javascript'), '/costs.js': ('costs.js', 'application/javascript'), '/costs.css': ('costs.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/echarts.min.js': ('vendor/echarts.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
+                files = {'/purchase-import.js': ('purchase-import.js', 'application/javascript'), '/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/warehouse-costs.js': ('warehouse-costs.js', 'application/javascript'), '/accounting.js': ('accounting.js', 'application/javascript'), '/fifo.js': ('fifo.js', 'application/javascript'), '/costs.js': ('costs.js', 'application/javascript'), '/costs.css': ('costs.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/echarts.min.js': ('vendor/echarts.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
                 if path not in files:
                     raise APIError('页面不存在', 404)
                 filename, mime = files[path]
@@ -720,6 +740,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.reply(self.manager.valuation.remove_record(payload))
             elif path == '/api/costs/fifo/import' and self.command == 'POST':
                 self.reply(self.manager.valuation.import_csv(payload.get('csv')))
+            elif path in ('/api/costs/tickets/import/preview', '/api/costs/tickets/import') and self.command == 'POST':
+                from purchase_import import preview, apply
+                self.reply(preview(self.manager.costs, payload) if path.endswith('/preview') else apply(self.manager.costs, payload))
             elif path == '/api/costs/tickets' and self.command == 'PUT':
                 self.reply(self.manager.costs.save_ticket(payload))
             elif path == '/api/costs/templates' and self.command == 'PUT':

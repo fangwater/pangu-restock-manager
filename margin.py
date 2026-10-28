@@ -66,10 +66,15 @@ def _build(source,costs,inputs,filters):
         item={**entry};meta=metadata.get(item['entry_key'])
         if meta:
             item.update(original_date=item.get('date'),date=meta.get('date') or item.get('date'),metadata_id=meta['id'],metadata_version=meta['version'],paid_at=meta.get('paid_at') or meta.get('paid_date') or item.get('paid_at'),site=meta.get('site'),product_id=meta.get('product_id'))
+        if item['allocation_status']=='non_order':
+            if not item.get('date'):
+                unassigned.append(item|{'allocation_reason':'已确认非订单款项缺少费用日期'})
+            elif start<=item['date']<=end:overhead.append(item)
+            continue
         allocations=[]
         if item['allocation_status']=='allocated':
             allocations=[{'key':(item['shop_key'],a['po_no'],a['platform_sku']),'amount':D(a['amount']),'allocation':a} for a in item['allocations']]
-        elif item.get('sku_status')=='matched' and item.get('order_status')=='matched':allocations=[{'key':(item['shop_key'],item['order_no'],item['platform_sku']),'amount':D(item['amount'])}]
+        elif item['allocation_status']=='matched' and item.get('sku_status')=='matched' and item.get('order_status')=='matched':allocations=[{'key':(item['shop_key'],item['order_no'],item['platform_sku']),'amount':D(item['amount'])}]
         if not allocations:
             unassigned.append(item);continue
         for a in allocations:

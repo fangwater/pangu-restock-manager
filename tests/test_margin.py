@@ -65,6 +65,17 @@ class MarginTests(unittest.TestCase):
             split=split_money(D(amount),{'A':D(1),'B':D(1),'C':D(1)})
             self.assertEqual(sum(split.values()),D(amount))
         self.assertEqual(split_money(D(1),{'A':D(0)}),None)
+    def test_reviewed_non_order_cash_is_counted_once_outside_sku_profit(self):
+        self.prepare();source=self.source();cash=self.cash('bank','-5');cash.update(order_no='',platform_sku='',allocation_status='non_order',review={'id':1,'version':2,'status':'active'})
+        source['cash'].append(cash);result=self.calculate(source)
+        self.assertEqual(D(result['rows'][0]['gross_profit']),D(88));self.assertEqual(D(result['summary']['operating_balance']),D(83));self.assertEqual(len(result['unassigned']),0)
+        self.assertEqual(result['overhead'][0]['review']['version'],2)
+    def test_stale_review_cannot_fall_back_to_raw_sku_matching(self):
+        self.prepare();source=self.source();source['cash'][0].update(allocation_status='unattributed',review={'status':'stale'})
+        result=self.calculate(source);self.assertIsNone(result['rows'][0]['gross_profit']);self.assertEqual(len(result['unassigned']),1)
+    def test_non_order_cash_without_date_stays_unassigned(self):
+        self.prepare();source=self.source();cash=self.cash('bank','-5');cash.update(date=None,allocation_status='non_order',order_no='',platform_sku='')
+        source['cash'].append(cash);result=self.calculate(source);self.assertIsNone(result['summary']['gross_profit']);self.assertIn('缺少费用日期',result['unassigned'][0]['allocation_reason'])
     def test_zero_or_negative_sales_receipts_have_no_margin_percentage(self):
         self.prepare();s=self.source();s['cash'][0]['amount']='0'
         r=self.calculate(s);self.assertIsNone(r['rows'][0]['gross_margin'])

@@ -108,6 +108,8 @@ def _build(source,costs,inputs,filters):
             base[key]['transactions'].append(t);all_cash.append(t)
     if unassigned:add_issue('unattributed_cash',f'{len(unassigned)} 笔平台收支或补录款项尚未归因，未分配到订单毛利')
     for issue in costs.get('issues',[]):add_issue('cost_'+issue['code'],issue['message'])
+    unassigned_shops={t['shop_key'] for t in unassigned if not t.get('order_no')}
+    unassigned_orders={(t['shop_key'],t['order_no']) for t in unassigned if t.get('order_no')}
     rows=[]
     for key,row in sorted(base.items()):
         reasons=row['reasons'];shop=key[0];native=defaultdict(lambda:D(0));breakdown=defaultdict(lambda:D(0));cash_total=D(0);net_sales=D(0);cash_ok=True;cash_trace=[]
@@ -121,7 +123,7 @@ def _build(source,costs,inputs,filters):
             cash_trace.append(t|{'converted_amount':format(converted,'f') if converted is not None else None,'fx':evidence})
         statement_complete=coverage(records,'statements',shop,start,asof)
         taxes_complete=coverage(records,'taxes',shop,start,asof)
-        if any(t['shop_key']==shop and (not t.get('order_no') or t['order_no']==row['order_no']) for t in unassigned):reasons.append('本订单或店铺存在未归因款项')
+        if shop in unassigned_shops or (shop,row['order_no']) in unassigned_orders:reasons.append('本订单或店铺存在未归因款项')
         if not statement_complete:reasons.append('财务账单未确认完整')
         if not taxes_complete:reasons.append('税费及非订单费用未确认完整')
         if policy['demand_basis']!='outbound':reasons.append('当前为订单需求测算，尚未采用实际出库')

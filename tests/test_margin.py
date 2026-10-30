@@ -53,6 +53,15 @@ class MarginTests(unittest.TestCase):
     def test_unassigned_cash_never_appears_as_complete_overall_profit(self):
         self.prepare();s=self.source();s['cash'][0]['allocation_status']='unattributed';s['cash'][0]['sku_status']='unattributed'
         r=self.calculate(s);self.assertIsNone(r['summary']['gross_profit']);self.assertEqual(len(r['unassigned']),1)
+    def test_unassigned_cash_only_flags_its_order_or_whole_shop_when_order_is_missing(self):
+        self.prepare()
+        for shop,order,expected in [('A','PO1',True),('A','PO2',False),('A','',True),('B','',False),('B','PO1',False)]:
+            with self.subTest(shop=shop,order=order):
+                source=self.source();cash=self.cash('unassigned','-5')
+                cash.update(shop_key=shop,order_no=order,allocation_status='unattributed')
+                source['cash'].append(cash);result=self.calculate(source)
+                self.assertEqual('本订单或店铺存在未归因款项' in result['rows'][0]['reasons'],expected)
+                self.assertIsNone(result['summary']['gross_profit'])
     def test_missing_fx_keeps_native_cash_and_null_profit(self):
         self.prepare();s=self.source();s['cash'][0]['currency']='EUR'
         r=self.calculate(s);self.assertEqual(r['rows'][0]['native_platform_net'],{'EUR':'100'});self.assertIsNone(r['rows'][0]['platform_net']);self.assertIsNone(r['rows'][0]['gross_profit'])

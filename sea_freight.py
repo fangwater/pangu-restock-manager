@@ -1,4 +1,4 @@
-"""Excel-owned ocean freight bills, original evidence, versioned imports and links."""
+"""Excel-owned ocean freight bills and versioned original evidence."""
 import base64
 import copy
 import hashlib
@@ -12,8 +12,8 @@ from decimal import Decimal, InvalidOperation
 from xml.etree import ElementTree as ET
 from zipfile import BadZipFile, ZipFile
 
-from excel_export import Formula, column_name, workbook
-from procurement import CostError, CostStore, dumps, text, timestamp
+from excel_export import Formula, workbook
+from procurement import CostError, dumps, text, timestamp
 
 MAX_FILE = 6 * 1024 * 1024
 NS = {'m': 'http://schemas.openxmlformats.org/spreadsheetml/2006/main'}
@@ -24,7 +24,6 @@ FIELDS = list(zip(
 FEES = [('sea_usd', '海运费', 'USD'), ('tax_usd', '税金', 'USD'), ('delivery_usd', '派送/清关', 'USD'), ('ams_usd', '舱单/AMS', 'USD'), ('other_usd', '其他项', 'USD'), ('trucking_cny', '拖车费', 'CNY'), ('port_cny', '港杂费', 'CNY'), ('customs_cny', '报关费', 'CNY'), ('other_cny', '其他项', 'CNY')]
 NUMBER_FIELDS = {k for k, _, _ in FEES} | {'usd_total', 'cny_total', 'packages', 'gross_weight', 'volume', 'goods_value'}
 DATE_FIELDS = {'departure_date', 'arrival_date', 'due_date'}
-EXTRA = [('warehouse_date', '入仓日期'), ('warehouse_date_basis', '入仓日期口径'), ('purchase_numbers', '采购单号'), ('link_note', '关联备注'), ('version', '版本'), ('source_rate', '参考汇率 USD/CNY')]
 
 
 def decimal_text(value):
@@ -79,7 +78,7 @@ def bill_checks(data):
     return checks
 
 
-def read_xlsx(blob):
+def read_xlsx(blob, with_metadata=False):
     if not isinstance(blob, bytes) or not 0 < len(blob) <= MAX_FILE:
         raise CostError('Excel 文件须为 1 字节至 6 MiB')
     try:
@@ -130,7 +129,17 @@ def read_xlsx(blob):
                         cells[col] = {'value': value, 'formula': cell.find('m:f', NS) is not None}
                     rows[index] = cells
                 sheets[sheet.get('name')] = rows
-            return sheets, epoch1904
+            metadata = {}
+            if with_metadata and 'docProps/custom.xml' in archive.namelist():
+                parts = sorted((p.get('name'), ''.join(p.itertext())) for p in xml('docProps/custom.xml') if (p.get('name') or '').startswith('PanguSeaSnapshot.'))
+                if parts:
+                    try:
+                        metadata = json.loads(''.join(value for _, value in parts))
+                        if not isinstance(metadata, dict) or not isinstance(metadata.get('bills'), dict):
+                            raise ValueError()
+                    except (ValueError, TypeError):
+                        raise CostError('Excel 导出版本信息损坏，请重新导出')
+            return (sheets, epoch1904, metadata) if with_metadata else (sheets, epoch1904)
     except CostError:
         raise
     except (BadZipFile, KeyError, ValueError, TypeError, IndexError, ET.ParseError, RuntimeError):
@@ -146,7 +155,7 @@ def header(rows, required):
 
 
 def parse_workbook(blob, include_issues=False):
-    sheets, epoch = read_xlsx(blob)
+    sheets, epoch, metadata = read_xlsx(blob, with_metadata=True)
     bills, warnings, keys, issues = [], [], set(), []
     plan = {}
     rate = None
@@ -216,18 +225,24 @@ def parse_workbook(blob, include_issues=False):
                     if data[total_key] is not None and sum(parts, Decimal(0)) != Decimal(data[total_key]):
                         raise CostError(currency + ' 分项金额与账单合计不一致')
                 p = plan.get(data['order_no']) or plan.get(data['bill_no']) or {}
+                snapshot = metadata.get('bills', {}).get(identity, {})
+                if not isinstance(snapshot, dict):
+                    raise CostError('Excel 导出版本信息损坏，请重新导出')
                 warehouse = get('入仓日期') if '入仓日期' in fields else p.get('入仓日期')
-                data.update(warehouse_date=excel_date(warehouse, epoch), warehouse_date_basis=str(get('入仓日期口径') or '未确认') if '入仓日期口径' in fields else '未确认')
+                warehouse_date = excel_date(warehouse, epoch)
+                basis = snapshot.get('warehouse_date_basis', '未确认') if snapshot.get('warehouse_date') == warehouse_date else '未确认'
+                data.update(warehouse_date=warehouse_date, warehouse_date_basis=basis,
+                            _warehouse_basis_supplied=bool(snapshot))
                 if data['warehouse_date_basis'] not in ('实际', '估算', '未确认'):
                     raise CostError('入仓日期口径须为实际、估算或未确认')
                 data.update(source_sheet=name, source_row=index, source_rate=rate,
                             mode=name.rsplit('-', 1)[0] if '-' in name else name, country=name.rsplit('-', 1)[-1] if '-' in name else '',
                             raw_cells=cells,
-                            purchase_numbers=[n.strip() for n in re.split(r'[,，;；\n]', str(get('采购单号') or '')) if n.strip()] if '采购单号' in fields else None,
-                            link_note=str(get('关联备注') or '') if '关联备注' in fields else None,
-                            expected_version=str(get('版本') or '').strip() if '版本' in fields else None)
+                            expected_version=str(get('版本') or '').strip() if '版本' in fields else str(snapshot.get('version') or ''))
                 if '参考汇率 USD/CNY' in fields:
                     data['source_rate'] = decimal_text(get('参考汇率 USD/CNY'))
+                elif rate is None and snapshot.get('source_rate') is not None:
+                    data['source_rate'] = decimal_text(snapshot['source_rate'])
                 if data['source_rate'] is not None and Decimal(data['source_rate']) <= 0:
                     raise CostError('参考汇率须大于零')
                 data['checks'] = bill_checks(data)
@@ -288,65 +303,6 @@ class SeaFreightStore:
     def rows(self, db):
         return [self.unpack(row) for row in db.execute('SELECT * FROM sea_bills ORDER BY id')]
 
-    def linked_rows(self, db):
-        rows = self.rows(db)
-        templates = {t['id']: t for t in CostStore.rows(db, 'cost_templates')}
-        tickets = [CostStore.decorate(t, templates) for t in CostStore.rows(db, 'cost_tickets')]
-        by_id = {t['id']: t for t in tickets}
-        by_number = {t['ticket_no']: t['id'] for t in tickets}
-        assigned, issues, bases = {r['id']: set() for r in rows}, {r['id']: [] for r in rows}, {}
-        normalize = lambda value: str(value or '').strip().upper()
-        for row in rows:
-            manual = set(row.get('purchase_ticket_ids') or []) | {by_number[n] for n in row['purchase_numbers'] if n in by_number}
-            for identity in manual & by_id.keys():
-                assigned[row['id']].add(identity)
-                bases[row['id'], identity] = ['人工关联']
-        for ticket in tickets:
-            identifiers = [('shipping_order_no', 'order_no', '托单号'), ('bill_of_lading_no', 'bill_no', '提单号')]
-            candidates = [(row, [label for key, sea_key, label in identifiers if normalize(ticket.get(key)) and normalize(ticket.get(key)) == normalize(row.get(sea_key))]) for row in rows]
-            matches = [(row, labels) for row, labels in candidates if labels]
-            if len(matches) > 1:
-                for row, _ in matches:
-                    issues[row['id']].append(ticket['ticket_no'] + ' 的识别号对应多笔海运账单')
-                continue
-            if len(matches) == 1:
-                row, labels = matches[0]
-                if any(normalize(ticket.get(key)) and normalize(row.get(sea_key)) and normalize(ticket[key]) != normalize(row[sea_key]) for key, sea_key, _ in identifiers):
-                    issues[row['id']].append(ticket['ticket_no'] + ' 的托单号与提单号对应关系不一致')
-                    continue
-                assigned[row['id']].add(ticket['id'])
-                bases[row['id'], ticket['id']] = labels
-        usage = Counter(identity for ids in assigned.values() for identity in ids)
-        for row in rows:
-            identities = assigned[row['id']]
-            linked, totals, extra_totals, missing = [], {}, {}, 0
-            for identity in sorted(identities):
-                t = by_id[identity]
-                linked.append({k: t.get(k) for k in ('id', 'ticket_no', 'shipping_order_no', 'bill_of_lading_no', 'purchase_currency', 'purchase_amount', 'missing_purchase_amounts', 'quantity', 'fee_totals')})
-                linked[-1]['match_basis'] = bases[row['id'], identity]
-                if usage[identity] > 1:
-                    issues[row['id']].append(t['ticket_no'] + ' 关联多个海运账单，采购货款尚未分摊')
-                for key, sea_key, _ in [('shipping_order_no', 'order_no', ''), ('bill_of_lading_no', 'bill_no', '')]:
-                    if normalize(t.get(key)) and normalize(row.get(sea_key)) and normalize(t[key]) != normalize(row[sea_key]):
-                        issues[row['id']].append(t['ticket_no'] + ' 的人工关联与识别号不一致')
-                code = t.get('purchase_currency')
-                missing += t['missing_purchase_amounts'] + (not code)
-                if code and t['purchase_amount'] is not None:
-                    totals[code] = totals.get(code, Decimal(0)) + Decimal(t['purchase_amount'])
-                for code, amount in t['fee_totals'].items():
-                    extra_totals[code] = extra_totals.get(code, Decimal(0)) + Decimal(amount)
-            complete = bool(linked) and not missing and not issues[row['id']] and row['usd_total'] is not None and row['cny_total'] is not None
-            combined = dict(totals)
-            for code, key in [('USD', 'usd_total'), ('CNY', 'cny_total')]:
-                if row[key] is not None:
-                    combined[code] = combined.get(code, Decimal(0)) + Decimal(row[key])
-            row.update(linked_purchases=linked, effective_purchase_numbers=[t['ticket_no'] for t in linked],
-                       purchase_totals={k: format(v, 'f') for k, v in totals.items()}, purchase_extra_fee_totals={k: format(v, 'f') for k, v in extra_totals.items()},
-                       purchase_missing_amounts=int(missing), link_issues=list(dict.fromkeys(issues[row['id']])),
-                       container_totals={k: format(v, 'f') for k, v in combined.items()} if complete else None,
-                       link_status='编号冲突 / 待核对' if issues[row['id']] else '已关联' if linked else '未关联')
-        return rows
-
     def plan(self, db, blob, filename, reference):
         sha = hashlib.sha256(blob).hexdigest()
         previous = db.execute('SELECT id,manifest FROM sea_files WHERE sha256=?', (sha,)).fetchone()
@@ -355,7 +311,6 @@ class SeaFreightStore:
             return {'filename': filename, 'sha256': sha, 'reference': reference, 'duplicate_file_id': previous['id'], 'rows': [], 'counts': {'new': 0, 'updated': 0, 'unchanged': manifest['bills']}, 'warnings': ['该文件已导入，本次不覆盖后续修改'], 'bills': manifest['bills']}
         parsed, warnings, rate, issues = parse_workbook(blob, include_issues=True)
         current = self.rows(db)
-        tickets = {json.loads(row['payload'])['ticket_no']: row['id'] for row in db.execute('SELECT * FROM cost_tickets WHERE deleted_at IS NULL')}
         plan, counts, matched_ids = [], Counter(), set()
         for incoming in parsed:
             data = copy.deepcopy(incoming)
@@ -370,15 +325,13 @@ class SeaFreightStore:
             expected = data.pop('expected_version')
             if expected not in (None, '') and (not expected.isdigit() or int(expected) != (old['version'] if old else 0)):
                 raise CostError('账单版本已变化，请重新导出后修改', 409)
-            numbers = data.pop('purchase_numbers')
-            if numbers is None:
-                numbers = (old or {}).get('purchase_numbers', [])
-            if len(set(numbers)) != len(numbers) or any(number not in tickets for number in numbers):
-                raise CostError('采购单号重复或不存在：' + '、'.join(numbers))
-            data['purchase_numbers'] = sorted(numbers)
-            data['purchase_ticket_ids'] = [tickets[n] for n in data['purchase_numbers']]
-            if data.get('link_note') is None:
-                data['link_note'] = (old or {}).get('link_note', '')
+            basis_supplied = data.pop('_warehouse_basis_supplied', False)
+            if old and not basis_supplied and data['warehouse_date'] == old.get('warehouse_date'):
+                data['warehouse_date_basis'] = old.get('warehouse_date_basis', '未确认')
+            # Preserve historic annotations without exposing or extending them.
+            for key in ('purchase_numbers', 'purchase_ticket_ids', 'link_note'):
+                if old and key in old:
+                    data[key] = old[key]
             def comparable(value):
                 return {k: v for k, v in value.items() if k not in ('id', 'version', 'created_at', 'updated_at', 'source_file_id', 'source_sheet', 'source_row', 'raw_cells', 'checks')}
             action = 'new' if not old else 'unchanged' if comparable(old) == comparable(data) else 'updated'
@@ -423,14 +376,15 @@ class SeaFreightStore:
                 db.execute('INSERT INTO sea_history(bill_id,action,before_json,after_json,file_id,reference,created_at) VALUES(?,?,?,?,?,?,?)', (identity, row['action'], dumps(row['before']) if row['before'] else None, dumps(data), file_id, reference, moment))
         return {'file_id': file_id, **plan['counts'], 'duplicate': False}
 
-    def list(self, query=None):
+    def list(self, query=None, *, internal=False):
         query = query or {}
         with self.store.connection() as db:
             db.execute('BEGIN')
-            all_rows = self.linked_rows(db)
+            all_rows = self.rows(db)
+            if not internal:
+                all_rows = [self.public_bill(r) for r in all_rows]
             files = [dict(r) for r in db.execute('SELECT id,sha256,filename,reference,manifest,created_at FROM sea_files ORDER BY id DESC LIMIT 30')]
             issue_files = [dict(r) for r in db.execute('SELECT id,manifest FROM sea_files ORDER BY id DESC')]
-            tickets = [{'id': r['id'], 'ticket_no': json.loads(r['payload'])['ticket_no']} for r in db.execute('SELECT * FROM cost_tickets WHERE deleted_at IS NULL ORDER BY id')]
         rows = all_rows
         for key in ('forwarder', 'mode', 'country'):
             if query.get(key):
@@ -443,15 +397,11 @@ class SeaFreightStore:
             if query['payment'] not in ('paid', 'unpaid', 'partial', 'unconfirmed'):
                 raise CostError('付款状态筛选无效')
             rows = [r for r in rows if payment_state(r['payment_status']) == query['payment']]
-        if query.get('link'):
-            if query['link'] not in ('linked', 'unlinked'):
-                raise CostError('采购单关联筛选无效')
-            rows = [r for r in rows if bool(r['effective_purchase_numbers']) == (query['link'] == 'linked')]
         if query.get('q'):
             q = str(query['q']).casefold()
-            rows = [r for r in rows if q in ' '.join(str(r.get(k) or '') for k in ('bill_no', 'order_no', 'container_no', 'destination', 'notes', 'source_reference', 'effective_purchase_numbers')).casefold()]
+            rows = [r for r in rows if q in ' '.join(str(r.get(k) or '') for k in ('bill_no', 'order_no', 'container_no', 'destination', 'notes', 'source_reference')).casefold()]
         rows.sort(key=lambda r: (r['departure_date'] or '', r['id']), reverse=True)
-        summary = {'bills': len(rows), 'paid': sum(payment_state(r['payment_status']) == 'paid' for r in rows), 'unconfirmed': sum(payment_state(r['payment_status']) == 'unconfirmed' for r in rows), 'unlinked': sum(not r['effective_purchase_numbers'] for r in rows), 'link_conflicts': sum(bool(r['link_issues']) for r in rows)}
+        summary = {'bills': len(rows), 'paid': sum(payment_state(r['payment_status']) == 'paid' for r in rows), 'unconfirmed': sum(payment_state(r['payment_status']) == 'unconfirmed' for r in rows)}
         for code, key in [('USD', 'usd_total'), ('CNY', 'cny_total')]:
             summary[code] = format(sum((Decimal(r[key]) for r in rows if r[key] is not None), Decimal(0)), 'f')
             summary[code + '_missing'] = sum(r[key] is None for r in rows)
@@ -461,7 +411,7 @@ class SeaFreightStore:
             for issue in json.loads(f['manifest']).get('issues') or []:
                 key = dumps({k: issue[k] for k in ('identifier', 'forwarder', 'title', 'amount', 'currency', 'notes')})
                 unique_issues.setdefault(key, {**issue, 'file_id': f['id']})
-        return {'rows': rows, 'summary': summary, 'options': options, 'files': [{**f, 'manifest': json.loads(f['manifest'])} for f in files], 'tickets': tickets, 'issues': list(unique_issues.values())}
+        return {'rows': rows, 'summary': summary, 'options': options, 'files': [{**f, 'manifest': json.loads(f['manifest'])} for f in files], 'issues': list(unique_issues.values())}
 
     def detail(self, identity):
         with self.store.connection() as db:
@@ -469,11 +419,18 @@ class SeaFreightStore:
             if not row:
                 raise CostError('账单不存在', 404)
             db.execute('BEGIN')
-            result = next(r for r in self.linked_rows(db) if r['id'] == identity)
+            result = self.public_bill(self.unpack(row))
             history = [dict(r) for r in db.execute('SELECT id,action,reference,file_id,created_at FROM sea_history WHERE bill_id=? ORDER BY id DESC LIMIT 50', (identity,))]
         return {**result, 'history': history, 'fees': [{'key': k, 'name': name, 'currency': code, 'amount': result[k]} for k, name, code in FEES]}
 
+    @staticmethod
+    def public_bill(row):
+        hidden = {'purchase_numbers', 'purchase_ticket_ids', 'link_note', 'warehouse_date_basis'}
+        return {key: value for key, value in row.items() if key not in hidden}
+
     def update(self, identity, payload):
+        if set(payload) - {'version', 'reference', 'payment_status', 'warehouse_date'}:
+            raise CostError('仅支持更新原表付款状态与入仓日期；其余字段通过 Excel 导入')
         if any(key in payload for key in NUMBER_FIELDS):
             raise CostError('金额与数量须通过 Excel 导入更新')
         reference = text(payload.get('reference'), '来源凭证', True, 1000)
@@ -491,18 +448,8 @@ class SeaFreightStore:
                 raise CostError('付款状态无效')
             data['payment_status'] = status
             data['warehouse_date'] = excel_date(payload.get('warehouse_date', data['warehouse_date']))
-            data['warehouse_date_basis'] = payload.get('warehouse_date_basis', data['warehouse_date_basis'])
-            if data['warehouse_date_basis'] not in ('实际', '估算', '未确认'):
-                raise CostError('入仓日期口径无效')
-            if data['warehouse_date_basis'] == '实际' and not data['warehouse_date']:
-                raise CostError('实际入仓日期未填写')
-            numbers = payload.get('purchase_numbers', data['purchase_numbers'])
-            if not isinstance(numbers, list) or len(numbers) > 100 or any(not isinstance(n, str) for n in numbers):
-                raise CostError('采购单关联无效')
-            tickets = {json.loads(r['payload'])['ticket_no']: r['id'] for r in db.execute('SELECT * FROM cost_tickets WHERE deleted_at IS NULL')}
-            if len(set(numbers)) != len(numbers) or any(n not in tickets for n in numbers):
-                raise CostError('采购单号重复或不存在')
-            data.update(purchase_numbers=sorted(numbers), purchase_ticket_ids=[tickets[n] for n in sorted(numbers)], link_note=text(payload.get('link_note', data['link_note']), '关联备注', maximum=2000))
+            if data['warehouse_date'] != old.get('warehouse_date'):
+                data['warehouse_date_basis'] = '未确认'
             db.execute('UPDATE sea_bills SET payload=?,version=version+1,updated_at=? WHERE id=?', (dumps(data), timestamp(), identity))
             db.execute('INSERT INTO sea_history(bill_id,action,before_json,after_json,reference,created_at) VALUES(?,?,?,?,?,?)', (identity, 'review', dumps(old), dumps(data), reference, timestamp()))
         return self.detail(identity)
@@ -515,38 +462,40 @@ class SeaFreightStore:
         return row['content']
 
     def export(self, query=None):
-        data = self.list(query)
+        data = self.list(query, internal=True)
         groups = {name: [] for name in ('整柜-美国', '整柜-加拿大', '散货-美国', '散货-加拿大')}
         for row in data['rows']:
             groups.setdefault(row['source_sheet'], []).append(row)
         rate_values = {r['source_rate'] for r in data['rows'] if r.get('source_rate')}
         rate = next(iter(rate_values)) if len(rate_values) == 1 else None
-        sheets = [('汇总总览', [['项目', '金额'], ['参考汇率 USD/CNY', Decimal(rate) if rate else None], ['账单票数', len(data['rows'])], ['人民币合计', Decimal(data['summary']['CNY'])], ['美元合计', Decimal(data['summary']['USD'])], ['人民币合计缺失票数', data['summary']['CNY_missing']], ['美元合计缺失票数', data['summary']['USD_missing']]])]
-        payment_rows = [['货代', '托单号/提单号', '开航日期', '入仓日期', '入仓日期口径', '付款到期日', '付款状态', '账单人民币', '账单美元', '参考折人民币', '参考汇率 USD/CNY', '采购单号', '金额口径']]
+        sheets = [('汇总总览', [['项目', '金额'], ['参考汇率 USD/CNY', Decimal(rate) if rate else None], ['账单票数', len(data['rows'])], ['人民币合计', Decimal(data['summary']['CNY'])], ['美元合计', Decimal(data['summary']['USD'])]])]
+        payment_rows = [['货代', '托单号/提单号', '开航日期', '入仓日期', '付款到期日', '付款状态', '账单人民币', '账单美元', '参考折人民币', '金额口径']]
         for bill in data['rows']:
             usd, cny = (Decimal(bill[k]) if bill[k] is not None else None for k in ('usd_total', 'cny_total'))
             bill_rate = Decimal(bill['source_rate']) if bill.get('source_rate') else None
-            payment_rows.append([bill['forwarder'], bill['order_no'] or bill['bill_no'], bill['departure_date'], bill['warehouse_date'], bill['warehouse_date_basis'], bill['due_date'], bill['payment_status'], cny, usd, cny + usd * bill_rate if cny is not None and usd is not None and bill_rate else None, bill_rate, ','.join(bill['purchase_numbers']), bill['amount_basis']])
+            payment_rows.append([bill['forwarder'], bill['order_no'] or bill['bill_no'], bill['departure_date'], bill['warehouse_date'], bill['due_date'], bill['payment_status'], cny, usd, cny + usd * bill_rate if cny is not None and usd is not None and bill_rate else None, bill['amount_basis']])
         sheets.append(('付款计划', payment_rows))
-        rate_col = column_name(len(FIELDS + EXTRA))
         for name, bills in groups.items():
-            rows = [[label for _, label in FIELDS + EXTRA]]
+            rows = [[label for _, label in FIELDS]]
             for i, bill in enumerate(sorted(bills, key=lambda r: (r['departure_date'], r['id'])), 2):
                 values = []
-                for key, label in FIELDS + EXTRA:
+                for key, label in FIELDS:
                     value = bill.get(key)
                     if key == 'sequence':
                         value = i - 1
-                    elif key == 'purchase_numbers':
-                        value = ','.join(bill['purchase_numbers'])
                     elif key in NUMBER_FIELDS and value is not None:
                         value = Decimal(value)
-                    elif key == 'source_rate' and value is not None:
-                        value = Decimal(value)
-                    elif key == 'converted_usd':
-                        value = Formula(f'IF(OR(M{i}="",R{i}="",{rate_col}{i}=""),"",M{i}+R{i}/{rate_col}{i})', Decimal(bill['usd_total']) + Decimal(bill['cny_total']) / Decimal(bill['source_rate']) if bill.get('source_rate') and bill['usd_total'] is not None and bill['cny_total'] is not None else None)
-                    elif key == 'converted_cny':
-                        value = Formula(f'IF(OR(M{i}="",R{i}="",{rate_col}{i}=""),"",R{i}+M{i}*{rate_col}{i})', Decimal(bill['cny_total']) + Decimal(bill['usd_total']) * Decimal(bill['source_rate']) if bill.get('source_rate') and bill['usd_total'] is not None and bill['cny_total'] is not None else None)
+                    elif key in ('converted_usd', 'converted_cny'):
+                        own_rate = bill.get('source_rate')
+                        valid = own_rate and bill['usd_total'] is not None and bill['cny_total'] is not None
+                        rate_ref = "'汇总总览'!$B$2" if rate else own_rate
+                        if valid:
+                            usd, cny, fx = Decimal(bill['usd_total']), Decimal(bill['cny_total']), Decimal(own_rate)
+                            expression = f'M{i}+R{i}/{rate_ref}' if key == 'converted_usd' else f'R{i}+M{i}*{rate_ref}'
+                            cached = usd + cny / fx if key == 'converted_usd' else cny + usd * fx
+                            value = Formula(f'IF(OR(M{i}="",R{i}=""),"",{expression})', cached)
+                        else:
+                            value = None
                     if key == 'usd_total' and value is not None:
                         value = Formula(f'SUM(H{i}:L{i})', value)
                     elif key == 'cny_total' and value is not None:
@@ -554,13 +503,9 @@ class SeaFreightStore:
                     values.append(value)
                 rows.append(values)
             sheets.append((name, rows))
-        sheets.append(('账单核对事项', [['货代', '托单号/提单号', '核对事项', '原表备注']] + [[r['forwarder'], r['order_no'] or r['bill_no'], '；'.join(r['checks']), r['notes']] for r in data['rows'] if r['checks']]))
         sheets.append(('异常费用清单', [['提单号/单号', '货代', '异常项目', '金额', '币种', '说明与建议']] + [[r['identifier'],r['forwarder'],r['title'],Decimal(r['amount']) if r['amount'] is not None else None,r['currency'],r['notes']] for r in data['issues']]))
-        sheets.append(('导入记录', [['文件编号', '文件名', 'SHA256', '来源凭证', '导入时间']] + [[f[k] for k in ('id', 'filename', 'sha256', 'reference', 'created_at')] for f in data['files']]))
-        codes = sorted({'CNY', 'USD'} | {code for r in data['rows'] for code in r['purchase_totals']})
-        reconciliation = [['托单号', '提单号', '柜号', '货代', '采购单号', '关联状态'] + ['采购货款 '+c for c in codes] + ['海运账单 CNY', '海运账单 USD'] + ['货款及海运合计 '+c for c in codes] + ['采购金额缺失行数', '核对事项']]
-        for r in data['rows']:
-            reconciliation.append([r['order_no'],r['bill_no'],r['container_no'],r['forwarder'],','.join(r['effective_purchase_numbers']),r['link_status']] + [Decimal(r['purchase_totals'][c]) if c in r['purchase_totals'] else None for c in codes] + [Decimal(r[k]) if r[k] is not None else None for k in ('cny_total','usd_total')] + [Decimal(r['container_totals'].get(c, '0')) if r['container_totals'] is not None else None for c in codes] + [r['purchase_missing_amounts'],'；'.join(r['link_issues'])])
-        sheets.append(('柜级费用核对', reconciliation))
-        sheets.append(('数据说明与差异提醒', [['项目', '口径'], ['金额', '原币费用分项与合计；空白表示未提供，不以零替代'], ['参考折算', '人民币合计 + 美元合计 × 各行参考汇率；不作为结算汇兑凭证'], ['付款状态', '待确认不作为已确认欠款；部分已付不推算余额'], ['一口价', '人民币一口价辅助拆分不追加计费；原始报价和原表可在 ERP 下载'], ['采购单关联', '按托单号或提单号精确匹配；两个编号不一致或对应多个海运账单时待核对'], ['柜级费用', '采购货款 + 海运账单，分币种展示；采购附加费用不重复累计；未关联、金额缺失或跨柜未分摊时不计算合计'], ['商品成本', '柜级汇总尚未分摊写入 SKU / FIFO 成本'], ['账单更新', '修改明细表后导入；版本不一致时须重新导出'], ['导出筛选', dumps(query or {})]]))
-        return workbook(sheets)
+        sheets.append(('数据说明与差异提醒', [['项目', '口径'], ['金额', '按原币保存；空白表示未提供'], ['参考折算', '人民币合计 + 美元合计 × 参考汇率'], ['付款状态', '待确认表示原表未确认付款'], ['一口价', '辅助估算拆分不追加到费用金额']]))
+        snapshot = {'bills': {r['forwarder'] + '\0' + (r['order_no'] or r['bill_no']): {k: r.get(k) for k in ('version', 'source_rate', 'warehouse_date', 'warehouse_date_basis')} for r in data['rows']}}
+        raw = dumps(snapshot)
+        properties = {f'PanguSeaSnapshot.{i // 30000:04d}': raw[i:i + 30000] for i in range(0, len(raw), 30000)}
+        return workbook(sheets, properties=properties)

@@ -67,7 +67,7 @@ class SeaFreightTests(unittest.TestCase):
         self.assertEqual(self.commit(payload)['unchanged'],1)
         self.assertEqual(prior,self.snapshot(prior))
         summary = self.sea.list()['summary']
-        self.assertEqual((summary['USD'],summary['CNY'],summary['unconfirmed'],summary['unlinked']),('123.45','66.78',1,1))
+        self.assertEqual((summary['USD'],summary['CNY'],summary['unconfirmed']),('123.45','66.78',1))
 
     def test_export_reimport_unchanged_and_controlled_formulas_are_cached(self):
         self.commit(self.payload())
@@ -85,14 +85,13 @@ class SeaFreightTests(unittest.TestCase):
     def test_review_is_versioned_and_duplicate_original_never_reverts_it(self):
         p=self.payload();self.commit(p)
         row=self.sea.list()['rows'][0]
-        updated=self.sea.update(row['id'],{'version':1,'reference':'银行回单','payment_status':'已付','warehouse_date':'2026-09-12','warehouse_date_basis':'实际','purchase_numbers':['PO-09']})
+        updated=self.sea.update(row['id'],{'version':1,'reference':'银行回单','payment_status':'已付','warehouse_date':'2026-09-12'})
         self.assertEqual(updated['version'],2)
-        self.assertEqual(updated['purchase_ticket_ids'],[61])
         self.assertNotIn('付款状态待确认，不作为已确认欠款',updated['checks'])
         self.commit(p)
         self.assertEqual(self.sea.detail(row['id'])['payment_status'],'已付')
         with self.assertRaises(CostError):self.sea.update(row['id'],{'version':1,'reference':'过期修改'})
-        for extra in [{'purchase_numbers':['INVALID']},{'warehouse_date':'','warehouse_date_basis':'实际'},{'payment_status':'自动已付'}]:
+        for extra in [{'purchase_numbers':['PO-09']},{'warehouse_date_basis':'实际'},{'payment_status':'自动已付'}]:
             with self.assertRaises(CostError):self.sea.update(row['id'],{'version':2,'reference':'核对',**extra})
         self.assertEqual(self.sea.preview(self.payload(self.sea.export()))['counts']['unchanged'],1)
 
@@ -116,57 +115,8 @@ class SeaFreightTests(unittest.TestCase):
             self.assertEqual(json.loads(h['before_json'])['usd_total'],'123.45')
             self.assertEqual(json.loads(h['after_json'])['usd_total'],'12.1234567891')
 
-    def set_identifiers(self, identity, order='', bl=''):
-        ticket=self.costs.detail(identity)
-        return self.costs.save_ticket({**ticket,'shipping_order_no':order,'bill_of_lading_no':bl})
-
-    def test_both_identifiers_link_multiple_purchases_without_double_counting_existing_freight(self):
-        self.commit(self.payload())
-        before={i:self.costs.detail(i) for i in (61,62)}
-        self.set_identifiers(61,'sea-1','BL-1');self.set_identifiers(62,'SEA-1')
-        row=self.sea.list()['rows'][0]
-        self.assertEqual(row['effective_purchase_numbers'],['PO-09','PO-10'])
-        self.assertEqual(row['purchase_totals'],{'CNY':'0.3000000003'})
-        self.assertEqual(row['container_totals'],{'CNY':'67.0800000003','USD':'123.45'})
-        self.assertEqual(row['purchase_extra_fee_totals'],{'CNY':'2000.25','USD':'200.02'})
-        self.assertEqual(self.sea.list({'link':'unlinked'})['rows'],[])
-        self.assertEqual(self.sea.list()['summary']['unlinked'],0)
-        for identity in (61,62):
-            self.assertEqual(before[identity]['purchase_amount'],self.costs.detail(identity)['purchase_amount'])
-            self.assertEqual(before[identity]['fee_totals'],self.costs.detail(identity)['fee_totals'])
-        self.assertEqual(self.sea.preview(self.payload(self.sea.export()))['counts']['unchanged'],1)
-
-    def test_identifier_conflicts_and_ambiguous_matches_do_not_create_container_totals(self):
-        self.commit(self.payload(source([bill(),bill(order_no='SEA-2',bill_no='BL-2')])))
-        self.set_identifiers(61,'SEA-1','BL-2')
-        rows=self.sea.list()['rows']
-        self.assertTrue(all(r['container_totals'] is None for r in rows))
-        self.assertTrue(all(r['link_issues'] for r in rows))
-        self.assertTrue(all(not r['effective_purchase_numbers'] for r in rows))
-        self.set_identifiers(61,'SEA-1','DIFFERENT')
-        r=next(r for r in self.sea.list()['rows'] if r['order_no']=='SEA-1')
-        self.assertIn('对应关系不一致',' '.join(r['link_issues']))
-        self.assertIsNone(r['container_totals'])
-
-    def test_identifier_edits_recompute_links_and_missing_purchase_amount_never_becomes_zero(self):
-        self.commit(self.payload())
-        self.set_identifiers(62,'SEA-1')
-        r=self.sea.list()['rows'][0];self.assertEqual(r['container_totals']['CNY'],'66.78')
-        ticket=self.costs.detail(62);ticket['lines'][0].update(amount=None,unit_price=None)
-        self.costs.save_ticket(ticket)
-        r=self.sea.detail(r['id']);self.assertEqual(r['purchase_missing_amounts'],1);self.assertIsNone(r['container_totals'])
-        self.set_identifiers(62,'OTHER')
-        self.assertEqual(self.sea.list()['summary']['unlinked'],1)
-
-    def test_cross_container_manual_association_requires_purchase_allocation(self):
-        self.commit(self.payload(source([bill(),bill(order_no='SEA-2',bill_no='BL-2')])))
-        for row in self.sea.list()['rows']:
-            self.sea.update(row['id'],{'version':1,'reference':'采购对应凭证','purchase_numbers':['PO-09']})
-        for row in self.sea.list()['rows']:
-            self.assertIsNone(row['container_totals']);self.assertIn('尚未分摊',' '.join(row['link_issues']))
-
-    def test_invalid_sum_duplicate_business_rows_missing_cache_and_unknown_purchase_are_atomic(self):
-        cases=[source([bill(usd_total=1)]),source([bill(),bill()]),source([bill(sea_usd=Formula('1+1'))]),source([bill(purchase_numbers='UNKNOWN')],[('purchase_numbers','采购单号')])]
+    def test_invalid_sum_duplicate_business_rows_and_missing_cache_are_atomic(self):
+        cases=[source([bill(usd_total=1)]),source([bill(),bill()]),source([bill(sea_usd=Formula('1+1'))])]
         for blob in cases:
             with self.subTest(length=len(blob)):
                 with self.assertRaises(CostError):self.sea.preview(self.payload(blob))
@@ -195,7 +145,7 @@ class SeaFreightTests(unittest.TestCase):
         self.commit(self.payload(blob))
         d=self.sea.list();self.assertEqual((d['summary']['CNY'],d['summary']['USD'],d['summary']['unconfirmed']),('200.00','0.00',1))
         self.assertEqual(self.sea.list({'payment':'unpaid'})['rows'],[])
-        self.assertEqual(len(self.sea.list({'payment':'unconfirmed','end':'2026-08-29','start':'2026-08-29','link':'unlinked','q':'SEA-1'})['rows']),1)
+        self.assertEqual(len(self.sea.list({'payment':'unconfirmed','end':'2026-08-29','start':'2026-08-29','q':'SEA-1'})['rows']),1)
         self.assertEqual(len(self.sea.list({'start':'2026-08-30'})['rows']),0)
 
     def test_xlsx_limits_invalid_zip_and_literal_formula_text(self):
@@ -204,6 +154,28 @@ class SeaFreightTests(unittest.TestCase):
         self.commit(self.payload(source([bill(notes='=HYPERLINK("http://example.test")')])) )
         parsed,_,_=parse_workbook(self.sea.export());self.assertEqual(parsed[0]['notes'],'=HYPERLINK("http://example.test")')
         sheets,_=read_xlsx(self.sea.export());self.assertFalse(sheets['整柜-美国'][2]['AI']['formula'])
+
+    def test_original_columns_export_and_hidden_version_checks_preserve_existing_data(self):
+        self.commit(self.payload())
+        with self.store.connection() as db:
+            row=db.execute('SELECT * FROM sea_bills').fetchone()
+            payload=json.loads(row['payload'])
+            payload.update(purchase_numbers=['PO-09'],purchase_ticket_ids=[61],link_note='历史备注',warehouse_date='2026-09-12',warehouse_date_basis='实际')
+            db.execute('UPDATE sea_bills SET payload=? WHERE id=?',(json.dumps(payload),row['id']))
+        before=self.snapshot(['sea_bills','cost_tickets','cost_history'])
+        exported=self.sea.export();sheets,_=read_xlsx(exported)
+        self.assertEqual([c['value'] for c in sheets['整柜-美国'][1].values()],[label for _,label in FIELDS])
+        self.assertTrue({'柜级费用核对','账单核对事项','导入记录'}.isdisjoint(sheets))
+        self.assertEqual(set(sheets),{'汇总总览','付款计划','整柜-美国','整柜-加拿大','散货-美国','散货-加拿大','异常费用清单','数据说明与差异提醒'})
+        result=self.sea.list();detail=self.sea.detail(row['id'])
+        for key in ('purchase_numbers','purchase_ticket_ids','link_note','warehouse_date_basis','purchase_totals','container_totals','effective_purchase_numbers'):
+            self.assertNotIn(key,result['rows'][0]);self.assertNotIn(key,detail)
+        self.assertNotIn('unlinked',result['summary']);self.assertNotIn('tickets',result)
+        self.assertEqual(self.sea.preview(self.payload(exported))['counts'],{'new':0,'updated':0,'unchanged':1})
+        self.assertEqual(before,self.snapshot(before))
+        self.sea.update(row['id'],{'version':1,'reference':'银行回单','payment_status':'已付'})
+        with self.assertRaises(CostError) as e:self.sea.preview(self.payload(exported))
+        self.assertEqual(e.exception.status,409)
 
     def test_http_guards_preview_import_review_export_and_source(self):
         class TestHandler(Handler):

@@ -292,11 +292,11 @@ class Manager:
         self.shein_url = os.environ.get('SHEIN_API_BASE_URL', 'https://pangutech.online/shein/api').rstrip('/')
 
     @staticmethod
-    def get(url, headers=None, timeout=40):
+    def get(url, headers=None, timeout=40, *, max_bytes=32 * 1024 * 1024):
         request = Request(url, headers={'Accept': 'application/json', 'User-Agent': 'Pangu-Restock/1.0', **(headers or {})})
         with urlopen(request, timeout=timeout) as response:
-            body = response.read(32 * 1024 * 1024 + 1)
-        if len(body) > 32 * 1024 * 1024:
+            body = response.read(max_bytes + 1)
+        if len(body) > max_bytes:
             raise ValueError('接口响应超过大小限制')
         envelope = json.loads(body)
         if envelope.get('success') is not True:
@@ -327,7 +327,9 @@ class Manager:
         if start>end or asof<end:
             raise CostError('日期顺序须为订单开始 ≤ 订单截止 ≤ 到账截止')
         try:
-            financial=self.get(self.sales_url+'/api/profit/margin-source?'+urlencode({'start':start,'end':end,'as_of':asof,'shop_key':query.get('shop_key','')}),timeout=70)['data']
+            # Cohort evidence includes every order and cash entry before paging;
+            # use the same 96 MiB bound as the finance report proxy.
+            financial=self.get(self.sales_url+'/api/profit/margin-source?'+urlencode({'start':start,'end':end,'as_of':asof,'shop_key':query.get('shop_key','')}),timeout=70,max_bytes=96 * 1024 * 1024)['data']
         except Exception:
             LOG.exception('Margin financial source failed')
             raise CostError('财务收入源读取失败，未以零金额计算',502)

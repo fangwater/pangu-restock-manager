@@ -11,8 +11,9 @@ from procurement import CostError, CostStore, currency, dumps, text, timestamp
 FIELDS = [('ticket_no','库存单号'),('version','版本'),('template','成本模板'),('template_version','模板版本'),
           ('purchase_currency','采购币种'),('effective_date','成本生效日期'),('ticket_note','单据备注'),
           ('kind','明细类型'),('sku','仓库SKU'),('cost_type_id','费用类型编号'),('category','费用分类'),
-          ('fee','费用名称'),('fee_currency','费用币种'),('quantity','数量'),('unit_price','单价'),('amount','金额'),('note','明细备注')]
-META = [k for k,_ in FIELDS[:7]]
+          ('fee','费用名称'),('fee_currency','费用币种'),('quantity','数量'),('unit_price','单价'),('amount','金额'),('note','明细备注'),
+          ('shipping_order_no','托单号'),('bill_of_lading_no','提单号')]
+META = [k for k,_ in FIELDS[:7]] + ['shipping_order_no','bill_of_lading_no']
 NUMBERS = ('quantity','unit_price','amount')
 MAX_BYTES, MAX_ROWS, MAX_TICKETS = 700000, 5000, 200
 
@@ -51,17 +52,17 @@ def export_csv(costs, filters=None, template=False, catalog=False):
         if fee not in ('','missing','recorded'):raise CostError('附加费用筛选无效')
         if template_id and not re.fullmatch('[1-9][0-9]*',template_id):raise CostError('成本模板筛选无效')
         for ticket in sorted(data['tickets'],key=lambda t:t['id']):
-            if q and q not in ' '.join([ticket['ticket_no'],ticket.get('note') or '',*ticket['skus']]).casefold():continue
+            if q and q not in ' '.join([ticket['ticket_no'],ticket.get('note') or '',ticket.get('shipping_order_no') or '',ticket.get('bill_of_lading_no') or '',*ticket['skus']]).casefold():continue
             if template_id and str(ticket.get('cost_template_id') or '')!=template_id:continue
             if (fee=='missing' and ticket['fee_entries']) or (fee=='recorded' and not ticket['fee_entries']):continue
             t=templates.get(ticket.get('cost_template_id'))
             meta=[ticket['ticket_no'],ticket['version'],t['name'] if t else '',t['version'] if t else '',
                   ticket.get('purchase_currency'),ticket.get('effective_date'),ticket.get('note')]
             for l in ticket['lines']:
-                rows.append(meta+['SKU',l['warehouse_sku'],'','','','',*[l.get(k) for k in NUMBERS],l.get('note')])
+                rows.append(meta+['SKU',l['warehouse_sku'],'','','','',*[l.get(k) for k in NUMBERS],l.get('note'),ticket.get('shipping_order_no'),ticket.get('bill_of_lading_no')])
             for c in ticket['costs']:
                 rows.append(meta+['费用','',c['cost_type_id'],c['category_name'],c['cost_type_name'],c['currency'],
-                                  *[c.get(k) for k in NUMBERS],c.get('note')])
+                                  *[c.get(k) for k in NUMBERS],c.get('note'),ticket.get('shipping_order_no'),ticket.get('bill_of_lading_no')])
     return encode_rows([label for _,label in FIELDS],rows)
 
 
@@ -73,12 +74,15 @@ def parse_csv(raw):
     raw=raw.removeprefix('\ufeff');rows=[]
     try:
         reader=csv.reader(io.StringIO(raw,newline=''),strict=True);headers=next(reader,[])
-        if len(headers)!=len(set(headers)) or set(headers)!={label for _,label in FIELDS}:raise CostError('CSV 表头须与采购成本模板一致，不能缺列、重复或增加列')
+        required={label for _,label in FIELDS[:-2]}; allowed={label for _,label in FIELDS}
+        if len(headers)!=len(set(headers)) or not required <= set(headers) <= allowed:raise CostError('CSV 表头须与采购成本模板一致；托单号、提单号可选，其余列不可缺少或重复')
         keys={label:key for key,label in FIELDS}
         for values in reader:
             if not any(v.strip() for v in values):continue
             if len(values)!=len(headers):raise CostError(f'第 {reader.line_num} 行列数与表头不一致')
-            row={keys[k]:unescape(v) for k,v in zip(headers,values)};row['_line']=reader.line_num;rows.append(row)
+            row={keys[k]:unescape(v) for k,v in zip(headers,values)}
+            for key in ('shipping_order_no','bill_of_lading_no'):row.setdefault(key,None)
+            row['_line']=reader.line_num;rows.append(row)
             if len(rows)>MAX_ROWS:raise CostError('CSV 超过 5000 行，请分批导入')
     except (csv.Error,UnicodeError) as exc:raise CostError('CSV 格式无效：'+str(exc))
     if not rows:raise CostError('CSV 没有采购明细')
@@ -95,7 +99,7 @@ def signature(ticket):
     def entry(value,fields):
         return tuple(Decimal(str(value[k])) if k in NUMBERS and value.get(k) not in (None,'') else
                      (None if k in NUMBERS else str(value.get(k) or '').strip()) for k in fields)
-    return (ticket.get('cost_template_id'),ticket.get('purchase_currency'),ticket.get('effective_date') or '',str(ticket.get('note') or '').strip(),
+    return (ticket.get('cost_template_id'),ticket.get('purchase_currency'),ticket.get('effective_date') or '',str(ticket.get('note') or '').strip(),ticket.get('shipping_order_no') or '',ticket.get('bill_of_lading_no') or '',
             sorted((l['warehouse_sku'],entry(l,(*NUMBERS,'note'))) for l in ticket['lines']),
             sorted((str(c['cost_type_id']),entry(c,('currency','calculation_mode',*NUMBERS,'note'))) for c in ticket['costs']))
 
@@ -107,7 +111,7 @@ def changes(before,after):
             a=(old or {}).get(field);b=(new or {}).get(field)
             same=(Decimal(str(a))==Decimal(str(b))) if field in NUMBERS and a not in (None,'') and b not in (None,'') else (a or None)==(b or None)
             if not same:result.append({'kind':kind,'key':key,'field':label,'before':a,'after':b})
-    compare('单据',after['ticket_no'],before,after,[('purchase_currency','采购币种'),('effective_date','成本生效日期'),('note','单据备注')])
+    compare('单据',after['ticket_no'],before,after,[('purchase_currency','采购币种'),('effective_date','成本生效日期'),('note','单据备注'),('shipping_order_no','托单号'),('bill_of_lading_no','提单号')])
     for kind,list_name,key in [('SKU','lines','warehouse_sku'),('费用','costs','cost_type_id')]:
         old={str(r[key]):r for r in (before or {}).get(list_name,[])};new={str(r[key]):r for r in after[list_name]}
         for identity in sorted(old.keys()|new.keys()):
@@ -152,6 +156,8 @@ def plan(costs,db,raw,reference):
                      'cost_template_id':t['id'] if t else None,'purchase_currency':currency(first['purchase_currency'],True),
                      'effective_date':first['effective_date'].strip(),'note':first['ticket_note'],
                      'lines':copy.deepcopy((old or {}).get('lines',[])),'costs':copy.deepcopy((old or {}).get('costs',[]))}
+            for key in ('shipping_order_no','bill_of_lading_no'):
+                if first[key] is not None:payload[key]=first[key]
             known={str(k['id']):k for k in CostStore.types(t or {}).values()}
             touched={'lines':set(),'costs':set()}
             for item in items:

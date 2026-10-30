@@ -23,6 +23,7 @@ from reporting import DEFAULT_RULE, compute_report, infer_product
 from excel_export import ExportQueue, MIME
 from procurement import CostStore, CostError
 from valuation import ValuationStore, fifo_report, fifo_csv, day
+from sea_freight import SeaFreightStore
 
 ROOT = Path(__file__).resolve().parent
 SHOPS = ('home', 'buy', 'shein')
@@ -282,6 +283,7 @@ class Manager:
         self.store = store
         self.costs = CostStore(store)
         self.valuation = ValuationStore(store)
+        self.sea_freight = SeaFreightStore(store)
         self.exports = ExportQueue(store, now)
         self.lock = threading.Lock()
         self.sync_state = {'running': False, 'started_at': None, 'completed_at': None}
@@ -574,7 +576,7 @@ class Handler(BaseHTTPRequestHandler):
     def query(self):
         return {k: v[0] for k, v in parse_qs(urlparse(self.path).query).items()}
 
-    def body(self):
+    def body(self, max_bytes=1024 * 1024):
         # Custom header requires a same-origin JS request; no permissive CORS.
         if self.headers.get('X-Pangu-Request') != 'restock':
             raise APIError('请从备货管理页面提交', 403)
@@ -585,7 +587,7 @@ class Handler(BaseHTTPRequestHandler):
             raise APIError('请提交 JSON 数据')
         try:
             size = int(self.headers.get('Content-Length', '0'))
-            if not 0 < size <= 1024 * 1024:
+            if not 0 < size <= max_bytes:
                 raise APIError('请求大小无效', 413)
             data = json.loads(self.rfile.read(size))
             if not isinstance(data, dict):
@@ -599,6 +601,14 @@ class Handler(BaseHTTPRequestHandler):
             path = urlparse(self.path).path
             if path == '/api/health':
                 self.reply({'service': 'pangu-restock-manager', 'time': now()})
+            elif path == '/api/sea-freight':
+                self.reply(self.manager.sea_freight.list(self.query()))
+            elif path == '/api/sea-freight/export.xlsx':
+                self.send_bytes(self.manager.sea_freight.export(self.query()), MIME, filename='sea-freight.xlsx')
+            elif re.fullmatch(r'/api/sea-freight/bills/[1-9][0-9]*', path):
+                self.reply(self.manager.sea_freight.detail(int(path.rsplit('/', 1)[-1])))
+            elif re.fullmatch(r'/api/sea-freight/files/[1-9][0-9]*', path):
+                self.send_bytes(self.manager.sea_freight.original(int(path.rsplit('/', 1)[-1])), MIME, filename='sea-freight-original.xlsx')
             elif path in ('/api/costs/margin','/api/costs/margin/export.csv'):
                 report=self.manager.margin(self.query())
                 if path.endswith('.csv'):
@@ -699,7 +709,7 @@ class Handler(BaseHTTPRequestHandler):
             elif path.startswith('/api/'):
                 raise APIError('接口不存在', 404)
             else:
-                files = {'/purchase-import.js': ('purchase-import.js', 'application/javascript'), '/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/warehouse-costs.js': ('warehouse-costs.js', 'application/javascript'), '/accounting.js': ('accounting.js', 'application/javascript'), '/fifo.js': ('fifo.js', 'application/javascript'), '/costs.js': ('costs.js', 'application/javascript'), '/costs.css': ('costs.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/echarts.min.js': ('vendor/echarts.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
+                files = {'/sea-freight.js': ('sea-freight.js', 'application/javascript'), '/sea-freight.css': ('sea-freight.css', 'text/css'), '/purchase-import.js': ('purchase-import.js', 'application/javascript'), '/': ('index.html', 'text/html'), '/app.js': ('app.js', 'application/javascript'), '/app.css': ('app.css', 'text/css'), '/warehouse-costs.js': ('warehouse-costs.js', 'application/javascript'), '/accounting.js': ('accounting.js', 'application/javascript'), '/fifo.js': ('fifo.js', 'application/javascript'), '/costs.js': ('costs.js', 'application/javascript'), '/costs.css': ('costs.css', 'text/css'), '/vendor/lucide.min.js': ('vendor/lucide.min.js', 'application/javascript'), '/vendor/echarts.min.js': ('vendor/echarts.min.js', 'application/javascript'), '/favicon.svg': ('favicon.svg', 'image/svg+xml')}
                 if path not in files:
                     raise APIError('页面不存在', 404)
                 filename, mime = files[path]
@@ -720,9 +730,13 @@ class Handler(BaseHTTPRequestHandler):
 
     def mutate(self):
         try:
-            payload = self.body()
             path = urlparse(self.path).path
-            if path == '/api/costs/accounting/warehouse/import' and self.command == 'POST':
+            payload = self.body(9 * 1024 * 1024 if path in ('/api/sea-freight/import/preview', '/api/sea-freight/import') else 1024 * 1024)
+            if path in ('/api/sea-freight/import/preview', '/api/sea-freight/import') and self.command == 'POST':
+                self.reply(self.manager.sea_freight.preview(payload) if path.endswith('/preview') else self.manager.sea_freight.import_file(payload))
+            elif re.fullmatch(r'/api/sea-freight/bills/[1-9][0-9]*', path) and self.command == 'PUT':
+                self.reply(self.manager.sea_freight.update(int(path.rsplit('/', 1)[-1]), payload))
+            elif path == '/api/costs/accounting/warehouse/import' and self.command == 'POST':
                 from warehouse_costs import import_evidence
                 self.reply(import_evidence(self.manager,payload))
             elif path == '/api/costs/accounting/policy' and self.command == 'PUT':

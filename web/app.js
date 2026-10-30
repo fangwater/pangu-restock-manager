@@ -31,7 +31,7 @@ const statuses = {
 };
 const state = {
   data: null,
-  view: ["overview", "plans", "catalog", "classification", "rules", "sources", "costs", "cost-templates", "cost-fifo", "cost-accounting"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "overview",
+  view: ["overview", "plans", "catalog", "classification", "rules", "sources", "costs", "cost-templates", "cost-fifo", "cost-accounting", "sea-freight"].includes(new URLSearchParams(location.search).get("view")) ? new URLSearchParams(location.search).get("view") : "overview",
   query: { preset: "last30" },
   page: 1,
   size: 20,
@@ -164,8 +164,8 @@ function render() {
   const url = new URL(location.href);
   url.searchParams.set("view", state.view);
   history.replaceState({}, "", url);
-  if (["costs", "cost-templates", "cost-fifo", "cost-accounting"].includes(state.view)) {
-    if (state.view === "cost-fifo") renderFIFO(); else if(state.view === "cost-accounting") renderAccounting(); else renderCostWorkspace();
+  if (["costs", "cost-templates", "cost-fifo", "cost-accounting", "sea-freight"].includes(state.view)) {
+    if (state.view === "sea-freight") renderSeaWorkspace(); else if (state.view === "cost-fifo") renderFIFO(); else if(state.view === "cost-accounting") renderAccounting(); else renderCostWorkspace();
     return;
   }
   $("costsPage").hidden = true;
@@ -1110,6 +1110,7 @@ document.querySelectorAll("[data-view]").forEach(
   (b) =>
     (b.onclick = () => {
       state.view = b.dataset.view;
+      if (state.view === "sea-freight") seaState.data = null;
       if (state.view === "classification") state.classification = null;
       state.page = 1;
       state.selected.clear();
@@ -1255,5 +1256,5 @@ setInterval(async () => {
   } catch {}
 }, 5000);
 icons();
-if (["costs", "cost-templates", "cost-fifo", "cost-accounting"].includes(state.view)) render();
+if (["costs", "cost-templates", "cost-fifo", "cost-accounting", "sea-freight"].includes(state.view)) render();
 load();

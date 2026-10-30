@@ -6,6 +6,8 @@ import math
 import re
 import threading
 import uuid
+from dataclasses import dataclass
+from decimal import Decimal
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -20,8 +22,14 @@ class Percent(float):
     pass
 
 
+@dataclass(frozen=True)
+class Formula:
+    expression: str
+    cached: object = None
+
+
 def xml_text(value):
-    return escape(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(value))[:32767])
+    return escape(re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f]', '', str(value))[:32767], {'"': '&quot;'})
 
 
 def column_name(index):
@@ -38,8 +46,13 @@ def worksheet(rows):
         cells = []
         for j, value in enumerate(row, 1):
             ref = column_name(j) + str(i)
-            style = 1 if i == 1 else 3 if isinstance(value, Percent) else 2 if isinstance(value, (float, int)) and not isinstance(value, bool) else 0
-            if isinstance(value, (float, int)) and not isinstance(value, bool) and math.isfinite(value):
+            numeric = isinstance(value, (float, int, Decimal)) and not isinstance(value, bool)
+            style = 1 if i == 1 else 3 if isinstance(value, Percent) else 2 if numeric or isinstance(value, Formula) else 0
+            if isinstance(value, Formula):
+                cached = '' if value.cached is None else str(value.cached)
+                kind = ' t="str"' if value.cached is None or isinstance(value.cached, str) else ''
+                cells.append(f'<c r="{ref}" s="{style}"{kind}><f>{xml_text(value.expression)}</f><v>{xml_text(cached)}</v></c>')
+            elif numeric and (value.is_finite() if isinstance(value, Decimal) else math.isfinite(value)):
                 cells.append(f'<c r="{ref}" s="{style}"><v>{float(value) if isinstance(value, Percent) else value}</v></c>')
             else:
                 text = '' if value is None else '是' if value is True else '否' if value is False else value

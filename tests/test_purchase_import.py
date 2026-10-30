@@ -135,4 +135,18 @@ class PurchaseImportTests(unittest.TestCase):
         with self.assertRaises(CostError):apply(self.costs,self.request(self.source()))
         with self.assertRaises(CostError):preview(self.costs,{'csv':self.source(),'reference':''})
 
+    def test_shipping_identifiers_export_patch_and_legacy_headers_preserve_existing_identifiers(self):
+        ticket=self.costs.detail(61)
+        self.costs.save_ticket({**ticket,'shipping_order_no':'SEA-1','bill_of_lading_no':'BL-1'})
+        raw=self.source(q='SEA-1');rows=parse_csv(raw)[1]
+        self.assertTrue(rows);self.assertTrue(all(r['shipping_order_no']=='SEA-1' and r['bill_of_lading_no']=='BL-1' for r in rows))
+        changed=self.rewrite(raw,lambda rows:[dict(r,bill_of_lading_no='BL-2') for r in rows])
+        plan=preview(self.costs,self.request(changed));self.assertEqual(plan['summary']['updated'],1)
+        self.assertIn('提单号',[c['field'] for c in plan['rows'][0]['changes']])
+        self.execute(self.request(changed));self.assertEqual(self.costs.detail(61)['bill_of_lading_no'],'BL-2')
+        current=parse_csv(self.source(q='PO-09'))[1]
+        legacy=encode_rows([v for _,v in FIELDS[:-2]],[[r[k] for k,_ in FIELDS[:-2]] for r in current]).decode('utf-8-sig')
+        self.assertEqual(self.execute(self.request(legacy))['summary']['unchanged'],1)
+        self.assertEqual(self.costs.detail(61)['shipping_order_no'],'SEA-1')
+
 if __name__=='__main__':unittest.main()

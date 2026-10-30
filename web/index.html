@@ -10,12 +10,14 @@
     <link rel="stylesheet" href="costs.css?v=20261028-1" />
     <script defer src="vendor/lucide.min.js"></script>
     <script defer src="vendor/echarts.min.js"></script>
-    <script defer src="costs.js?v=20261028-1"></script>
-    <script defer src="purchase-import.js?v=20261028-1"></script>
+    <script defer src="costs.js?v=20261030-sea-2"></script>
+    <script defer src="purchase-import.js?v=20261030-sea-2"></script>
     <script defer src="warehouse-costs.js?v=20261026-1"></script>
     <script defer src="accounting.js?v=20261026-1"></script>
     <script defer src="fifo.js?v=20261026-3"></script>
-    <script defer src="app.js?v=20261026-5"></script>
+    <link rel="stylesheet" href="sea-freight.css?v=20261030-3" />
+    <script defer src="sea-freight.js?v=20261030-3"></script>
+    <script defer src="app.js?v=20261030-sea-3"></script>
   </head>
   <body>
     <aside class="sidebar" id="sidebar">
@@ -46,6 +48,7 @@
         <button class="nav-item" data-view="costs">
           <i data-lucide="receipt-text"></i>采购与物流成本
         </button>
+        <button class="nav-item" data-view="sea-freight"><i data-lucide="ship"></i>海运费用</button>
         <button class="nav-item" data-view="cost-fifo"><i data-lucide="list-ordered"></i>FIFO 商品成本</button>
         <button class="nav-item" data-view="cost-accounting"><i data-lucide="calculator"></i>成本核算配置</button>
         <button class="nav-item" data-view="cost-templates">

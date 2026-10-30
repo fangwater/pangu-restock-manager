@@ -292,6 +292,8 @@ class CostStore:
             except ValueError:
                 raise CostError('成本生效日期须为 YYYY-MM-DD')
         after = {'ticket_no': name, 'cost_template_id': template_id,
+                 'shipping_order_no': text(payload.get('shipping_order_no', (old or {}).get('shipping_order_no')), '托单号', maximum=200),
+                 'bill_of_lading_no': text(payload.get('bill_of_lading_no', (old or {}).get('bill_of_lading_no')), '提单号', maximum=200),
                  'purchase_currency': currency(payload.get('purchase_currency', DEFAULT_PURCHASE_CURRENCY), True),
                  'effective_date': effective or None, 'note': text(payload.get('note'), '备注', maximum=4000),
                  'source_shop_key': (old or {}).get('source_shop_key', ''), 'lines': lines, 'costs': costs}
